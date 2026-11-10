@@ -1,188 +1,45 @@
-<p align="center">
-  <img src="assets/icon.svg" width="96" height="96" alt="Wisp logo">
-</p>
+<p align="center"><img src="assets/icon.svg" width="80" height="80" alt="Doggo"></p>
+<h1 align="center">Doggo</h1>
+<p align="center">A lightweight dock and launcher for Windows, built with Rust, Win32 and Direct2D.</p>
 
-<h1 align="center">Wisp</h1>
+Doggo is a personal fork of [Wisp](https://github.com/SumirSeth/wisp) by Sumir Seth and contributors. It keeps Wisp's native architecture, dock-to-search animation, tray integration and MIT license.
 
-<p align="center">
-  <b>A dock and a launcher for Windows.</b><br>
-  Replaces the taskbar. One ~1.5 MB executable.
-</p>
+## Features
 
-<p align="center">
-  <a href="https://github.com/SumirSeth/wisp/releases/latest"><img src="https://img.shields.io/github/v/release/SumirSeth/wisp?style=flat-square&color=0891b2" alt="Latest release"></a>
-  <a href="https://github.com/SumirSeth/wisp/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/SumirSeth/wisp/ci.yml?branch=main&style=flat-square" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/SumirSeth/wisp?style=flat-square" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/platform-Windows%2011-0078d4?style=flat-square" alt="Windows 11">
-</p>
+- **Pinned apps:** reuse upstream pinning, with saved drag reordering. Closed pins launch their apps; running pins switch to existing windows.
+- **Windows-key dock:** optionally tap Windows to reveal the dock, then type to search. Windows combinations remain available. The configured search shortcut still opens search directly.
+- **System controls:** tray access remains available, with a native Windows taskbar fallback. When the taskbar is shown, Doggo stays above it.
+- **Power menu:** a small icon beside the clock offers Lock, Restart and Shut down. Restart and shutdown ask for confirmation.
+- **Vertical volume:** click the speaker for a slim slider and mute button, matching the dock. Drag up/down, use arrow keys, or scroll over the dock speaker.
 
-<p align="center">
-  <img src="assets/dock-to-launcher.webp" width="700" alt="The dock slides up, then grows into the launcher">
-</p>
+## Build and run
 
-Wisp hides the taskbar and puts a dock in its place. Press <kbd>Alt</kbd>+<kbd>Space</kbd> and the dock grows into a launcher.
-
-It is written in Rust with Win32 and Direct2D. It needs no .NET, web view or PowerToys.
-
-## Install
-
-1. Download `wisp-vX-x86_64-windows.zip` from the [latest release](https://github.com/SumirSeth/wisp/releases/latest).
-2. Extract it to `%LOCALAPPDATA%\Programs\Wisp`.
-3. Run `wisp.exe`. The settings app opens and sets your shortcut and **Start with Windows**.
-
-Keep `wisp-settings.exe` beside `wisp.exe` for Settings and updates. To update, select **Update** on the **About** page in Settings.
-
-Once available, you can also install with winget:
+Requires Windows, Rust with the MSVC toolchain, and the Windows SDK.
 
 ```powershell
-winget install SumirSeth.Wisp
+git clone https://github.com/cetasikas/doggo.git
+cd doggo
+.\scripts\build-doggo.ps1
+.\dist\Doggo\doggo.exe
 ```
 
-Update that install with `winget upgrade SumirSeth.Wisp`.
+The build script uses `cargo +stable`; the verified compiler is Rust 1.99.1. Keep `doggo-settings.exe` beside `doggo.exe`. The portable files are written to `dist\Doggo`.
 
-> [!NOTE]
-> PowerToys Run also uses <kbd>Alt</kbd>+<kbd>Space</kbd>. Turn it off, or change Wisp's shortcut.
+Doggo stores settings and pins in `%APPDATA%\doggo`, separately from Wisp. Open Settings from the tray icon to enable **Windows key dock**, choose a shortcut or enable **Start with Windows**. Startup is optional and is never enabled by the build script.
 
-> [!NOTE]
-> Wisp is not code-signed. If SmartScreen warns you, select **More info → Run anyway**.
+Run one dock/taskbar controller at a time. Exit Wisp and any script that remaps the Windows key before using Doggo's native Windows-key option. Normal launches reveal the dock when Doggo is already running; `doggo.exe --show` opens search and `doggo.exe --quit` exits it.
 
-## Dock
+See [DOGGO.md](DOGGO.md) for controls and settings, [VALIDATION.md](VALIDATION.md) for verification limits, and [UPSTREAM.md](UPSTREAM.md) for the contribution plan.
 
-The dock appears when the pointer touches the bottom edge of a screen, and hides when you move away. To keep it on screen, turn on **Keep the dock visible** in Settings. Maximized windows then stop above it.
+## Checks
 
-| Do this | To |
-| --- | --- |
-| Click an app | Switch to it |
-| Click the app in front | Minimize it |
-| Middle-click an app | Open a new window of it |
-| Right-click an app | Pin or unpin it, or close its windows |
-| Hover an app with several windows | See its windows. Click one to switch to it, middle-click to close it. |
-| Click a tray icon | Use it as you would on the taskbar |
-| Click **⌄** | Show the hidden tray icons |
-| Right-click **⌄** | Show the taskbar, or open taskbar settings |
-| Click the volume | Mute or unmute |
-| Scroll over the volume | Change the volume |
-| Right-click the volume | Open sound settings |
-| Click the clock | Open notifications and the calendar |
-| Click the battery | Open battery settings |
-| Scroll anywhere else | Switch virtual desktops |
-| <kbd>Shift</kbd>+scroll | Scroll through the apps |
-
-Right-click an app and choose **Pin to dock** to keep it before running apps, in pin order. Click a closed pinned app to start it. To clear pins, choose **Unpin all** on a pinned app, or **Unpin all apps** in Settings.
-
-The dock hides over full-screen apps. Tray icons you pin in Windows show in the dock; the rest are behind **⌄**.
-
-If Wisp quits or crashes, the taskbar comes back with every tray icon.
-
-## Launcher
-
-<p align="center">
-  <img src="assets/screenshot-launcher.png" width="700" alt="The launcher searching for apps">
-</p>
-
-Type to search, then press <kbd>Enter</kbd>.
-
-| Type | To |
-| --- | --- |
-| `code` | Find apps, then files. `vsc` finds Visual Studio Code. |
-| `?invoice` | Find files only |
-| `^vis` · `term$` · `'note` · `!edge` | Match the start · the end · exactly · exclude |
-| `sqrt(2) * 10` | Calculate. <kbd>Enter</kbd> copies the result. |
-| `> ipconfig` | Run a command in Command Prompt |
-| `wifi off` · `bt` · `vol 40` · `mute` | Change a setting. <kbd>Tab</kbd> lists networks, devices or outputs. |
-| `play` · `pause` · `next` | Control media |
-| `w code` | Switch to an open window |
-| `lock` · `sleep` · `restart` · `shut down` | Lock or power off. Some ask for a second <kbd>Enter</kbd>. |
-| `time tokyo` · `date` | Copy a time or the date |
-| `dark mode` · `display` · … | Open that Settings page |
-| `now` · `sound` | Open live panels for status and audio |
-| `quit` | Quit Wisp |
-| Anything else | Search the web |
-
-Apps you opened recently rank higher. With the box empty, the launcher shows your recent apps.
-
-| Key | To |
-| --- | --- |
-| <kbd>Alt</kbd>+<kbd>Space</kbd> | Show or hide the launcher |
-| <kbd>Enter</kbd> | Open the selected result |
-| <kbd>Tab</kbd> | Show more actions, such as **Run as administrator** |
-| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> | Run as administrator |
-| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> | Show in File Explorer |
-| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Copy the path |
-| <kbd>Esc</kbd> | Close |
-
-### Drag and drop
-
-Drag a result out of the launcher and drop it anywhere:
-
-- **Files and folders** into a chat, an email, an upload box or a folder. The original stays where it is.
-- **Apps** onto the desktop or into a folder, to make a shortcut.
-- **Text**, such as a result, the time or a path, into any text box.
-- **Links and web searches** into a browser or a chat.
-
-Press <kbd>Esc</kbd> to cancel a drag.
-
-## Settings
-
-Open **Settings** from Wisp's tray icon, or edit `%APPDATA%\wisp\config.toml`. The tray icon also has **Rescan apps**, **Start with Windows** and **Quit**.
-
-| Setting | Default | What it does |
-| --- | --- | --- |
-| `hotkey` | `"Alt+Space"` | Shows or hides the launcher |
-| `dock` | `true` | Shows the dock |
-| `dock_autohide` | `true` | Hides the dock until the pointer touches the bottom edge. `false` keeps it visible. |
-| `window_list` | `"multiple"` | `"multiple"` lists an app's windows when it has more than one; `"always"` or `"off"` |
-| `dock_icon_size` | `32` | App icon size in the dock, 24–40 DIP. The dock's height, spacing and status area scale with it. |
-| `hide_taskbar` | `true` | Hides the Windows taskbar while Wisp runs |
-| `position` | `"bottom"` | `"bottom"` grows the launcher from the dock; `"center"` opens it in the middle |
-| `theme` | `"system"` | `"system"`, `"dark"` or `"light"` |
-| `backdrop` | `"acrylic"` | `"acrylic"`, `"mica"` or `"solid"` |
-| `max_results` | `8` | Results visible at once |
-| `show_recent` | `true` | Shows recent apps when the box is empty |
-| `file_search` | `true` | Searches files in the Windows Search index |
-| `file_search_exclude` | `["node_modules", …]` | Folder names file search skips |
-| `search_url` | Google | Web search URL. `{query}` is replaced by your search. |
-
-Configs from Wisp 0.3 keep the taskbar. To switch, set `dock` and `hide_taskbar` to `true` and `position` to `"bottom"`.
-
-To add your own panel, put a TOML file in `%APPDATA%\wisp\surfaces`. See [`src/surface/now.toml`](src/surface/now.toml) for an example.
-
-## Speed
-
-Wisp 0.2.0 against PowerToys Run 0.94 on the same PC, median of 30 runs:
-
-| | Wisp | PowerToys Run |
-| --- | --- | --- |
-| Typing → first results | **24 ms** | 200 ms |
-| Shortcut → launcher drawn | **15 ms** | 30 ms |
-| Memory | **20 MB** | 302 MB |
-| Size on disk | **1.5 MB** (0.4.0) | 794 MB |
-
-The dock grows into the launcher in 155 ms. A hidden dock uses almost no CPU. [`bench/`](bench) has the method and full results.
-
-## How it works
-
-- **Tray icons:** Wisp creates its own hidden `Shell_TrayWnd`, which apps find first. Wisp copies each icon and passes the message on to Explorer.
-- **One window:** the dock and the launcher are the same window, so the dock can grow into the launcher.
-- **Blur:** Windows turns off blur for inactive windows. The dock is never active, so it uses an older blur API that stays on.
-- **Drawing:** Direct2D draws in software. At this size it is fast and saves about 30 MB.
-- **Apps:** Wisp reads `shell:AppsFolder`, the same list Start uses.
-- **Files:** Wisp queries the Windows Search index on a worker thread.
-
-## Build
-
-Install [Rust](https://rustup.rs) and the Windows SDK, then:
-
-```sh
-git clone https://github.com/SumirSeth/wisp
-cd wisp
-cargo build --release --workspace
+```powershell
+cargo +stable fmt --all --check
+cargo +stable test --workspace --locked
+cargo +stable clippy --workspace --all-targets -- -D warnings
+cargo +stable clippy --workspace --all-targets --features wisp/nightly,wisp-settings/nightly,wisp/perf-trace -- -D warnings
 ```
 
-To try your changes without touching your installed Wisp, run `scripts\install-nightly.ps1`. It installs **Wisp Nightly** with its own folder, config and shortcut (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd>).
+## License and attribution
 
-To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## License
-
-[MIT](LICENSE) © Sumir Seth
+[MIT](LICENSE). Original Wisp code and icons: copyright Sumir Seth and contributors. Upstream persistent dock pinning was contributed by SorbetMango. The upstream project remains [SumirSeth/wisp](https://github.com/SumirSeth/wisp); Doggo is an independent fork.

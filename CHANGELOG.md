@@ -2,6 +2,23 @@
 
 User-facing changes in each release. Each release on GitHub lists these notes and its pull requests.
 
+## Doggo personal fork - 2026-11-10
+
+- Simplify volume controls to a slim vertical slider, percentage and speaker mute button matching the dock.
+
+- Add a power button beside the clock with Lock, Restart and Shut down; restart/shutdown require confirmation.
+- Clicking dock volume opens a compact native volume slider with mute/unmute, keyboard controls and outside-click dismissal.
+
+- Keep the tray arrow available without a tray host, with native Windows taskbar access as a fallback. Place the dock and search above the native taskbar when it is shown. Defer reentrant settings notifications so live changes are retained.
+
+- Opening Doggo again now reveals the dock instead of forcing search. The tray Open action follows the same rule; the explicit search shortcut and `--show` still open search.
+
+- Windows-key taps now reveal the dock first. Typing opens search immediately and preserves the first character; Escape, another tap or switching apps dismisses the keyboard dock.
+
+- Reuse upstream dock pinning (by @SorbetMango), with drag reordering saved across restarts.
+- Optionally toggle the launcher with a standalone Windows-key release, using a native hook; keep configurable shortcuts.
+- Isolate Doggo's executable, settings, data, instance mutex and startup entry. Disable upstream binary updates. Do not enable startup automatically.
+
 ## Unreleased
 
 ### New

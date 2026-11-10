@@ -131,3 +131,7 @@ toml_edit = { opt-level = "z" }
 ttf-parser = { opt-level = "z" }
 usvg = { opt-level = "z" }
 zune-jpeg = { opt-level = "z" }
+
+[[bin]]
+name = "doggo"
+path = "src/main.rs"

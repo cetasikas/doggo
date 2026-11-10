@@ -57,6 +57,7 @@ pub struct Config {
     pub dock_autohide: bool,
     pub dock_icon_size: usize,
     pub hotkey: String,
+    pub windows_key_search: bool,
     pub max_results: usize,
     pub theme: Theme,
     pub backdrop: Backdrop,
@@ -152,5 +153,16 @@ mod tests {
         assert_eq!(default.dock_icon_size, 32);
         assert_eq!(default.position, Position::Bottom);
         assert!(Config::parse("dock = \"yes\"").is_err());
+    }
+}
+
+#[cfg(test)]
+mod doggo_tests {
+    #[test]
+    fn windows_key_is_opt_in_and_keeps_the_shortcut() {
+        assert!(!super::Config::default().windows_key_search);
+        let config = super::Config::parse("windows_key_search = true\nhotkey = 'Ctrl+Space'").unwrap();
+        assert!(config.windows_key_search);
+        assert_eq!(config.hotkey, "Ctrl+Space");
     }
 }

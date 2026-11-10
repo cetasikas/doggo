@@ -35,3 +35,7 @@ features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]
+
+[[bin]]
+name = "doggo-settings"
+path = "src/main.rs"

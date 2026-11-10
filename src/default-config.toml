@@ -50,3 +50,6 @@ window_list = "multiple"
 
 # App icons in the dock, in DIPs (24 to 40). The default is 32.
 dock_icon_size = 32
+
+# Reveal the dock on a standalone Windows-key release; type to open search.
+windows_key_search = false

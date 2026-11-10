@@ -1,21 +1,20 @@
-//! Release channel. Nightly builds use their own data folder, window class,
-//! mutex and startup entry, so they run beside a stable install.
-
+//! Doggo is a personal Wisp fork with an isolated runtime identity.
 use windows::core::{PCWSTR, w};
+#[allow(dead_code)] // Used by the settings companion.
+pub const MANUAL_UPDATES: bool = true;
+pub const NAME: &str = "Doggo";
+pub const DATA_DIR: &str = "doggo";
+pub const LAUNCHER_CLASS: PCWSTR = w!("Doggo.Launcher");
+pub const INSTANCE_MUTEX: PCWSTR = w!(r"Local\Doggo.Launcher.SingleInstance");
+pub const RUN_VALUE: PCWSTR = w!("Doggo");
 
-pub const NIGHTLY: bool = cfg!(feature = "nightly");
-pub const NAME: &str = if NIGHTLY { "Wisp Nightly" } else { "Wisp" };
-/// Folder under `%APPDATA%`.
-pub const DATA_DIR: &str = if NIGHTLY { "wisp-nightly" } else { "wisp" };
-pub const LAUNCHER_CLASS: PCWSTR = if NIGHTLY {
-    w!("Wisp.Nightly.Launcher")
-} else {
-    w!("Wisp.Launcher")
-};
-pub const INSTANCE_MUTEX: PCWSTR = if NIGHTLY {
-    w!(r"Local\Wisp.Nightly.Launcher.SingleInstance")
-} else {
-    w!(r"Local\Wisp.Launcher.SingleInstance")
-};
-/// Value name under the Run key for Start with Windows.
-pub const RUN_VALUE: PCWSTR = if NIGHTLY { w!("Wisp Nightly") } else { w!("Wisp") };
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fork_identity_is_isolated() {
+        assert_eq!(super::DATA_DIR, "doggo");
+        assert_eq!(super::NAME, "Doggo");
+        assert_eq!(unsafe { super::LAUNCHER_CLASS.to_string().unwrap() }, "Doggo.Launcher");
+        assert_eq!(unsafe { super::RUN_VALUE.to_string().unwrap() }, "Doggo");
+    }
+}

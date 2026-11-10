@@ -536,6 +536,40 @@ pub struct TaskbarHider {
 const PEEK_MIN: Duration = Duration::from_secs(4);
 const PEEK_MAX: Duration = Duration::from_secs(60);
 
+/// Reveal Explorer's native controls when Doggo does not own the tray.
+pub fn show_native_taskbar() -> Result<()> {
+    let current = bars()?;
+    let primary = current
+        .iter()
+        .find(|bar| bar.class == "Shell_TrayWnd")
+        .ok_or_else(|| failure("Explorer's taskbar was not found"))?;
+    for bar in &current {
+        unsafe {
+            let _ = ShowWindow(HWND(bar.hwnd as _), SW_SHOWNOACTIVATE);
+        }
+    }
+    unsafe {
+        let _ = SetForegroundWindow(HWND(primary.hwnd as _));
+    }
+    Ok(())
+}
+
+pub fn peek_finished(start: Instant) -> Result<bool> {
+    let mut cursor = POINT::default();
+    let _ = unsafe { GetCursorPos(&mut cursor) };
+    let current = bars()?;
+    let over = current.iter().any(|bar| {
+        let r = bar.rect;
+        cursor.x >= r.left && cursor.x < r.right && cursor.y >= r.top && cursor.y < r.bottom
+    });
+    let focused = unsafe {
+        let foreground = GetAncestor(GetForegroundWindow(), GA_ROOTOWNER);
+        current.iter().any(|bar| bar.hwnd == foreground.0 as usize)
+    };
+    let elapsed = start.elapsed();
+    Ok(elapsed >= PEEK_MIN && (!(over || focused) || elapsed >= PEEK_MAX))
+}
+
 impl TaskbarHider {
     /// Takes the snapshot, starts the watchdog and the show hook. `reapply`
     /// then hides the taskbars.
@@ -667,19 +701,7 @@ impl TaskbarHider {
     /// Returns true when the peek is over.
     pub fn peek_tick(&mut self) -> Result<bool> {
         let Some(start) = self.peek else { return Ok(true) };
-        let mut cursor = POINT::default();
-        let _ = unsafe { GetCursorPos(&mut cursor) };
-        let current = bars()?;
-        let over = current.iter().any(|bar| {
-            let r = bar.rect;
-            cursor.x >= r.left && cursor.x < r.right && cursor.y >= r.top && cursor.y < r.bottom
-        });
-        let focused = unsafe {
-            let foreground = GetAncestor(GetForegroundWindow(), GA_ROOTOWNER);
-            current.iter().any(|bar| bar.hwnd == foreground.0 as usize)
-        };
-        let elapsed = start.elapsed();
-        if elapsed < PEEK_MIN || (over || focused) && elapsed < PEEK_MAX {
+        if !peek_finished(start)? {
             return Ok(false);
         }
         self.peek = None;

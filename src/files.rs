@@ -474,7 +474,7 @@ mod tests {
         assert!(is_excluded(r"C:\Users\me\code\app\node_modules\x\README.md", &exclude));
         assert!(is_excluded(r"C:\Users\me\appdata\Local\x.txt", &exclude));
         assert!(is_excluded(r"C:\Users\me\.git\config", &exclude));
-        assert!(is_excluded(r"C:\Users\me\.claude.json.backup", &exclude));
+        assert!(is_excluded(r"C:\Users\me\.settings.json.backup", &exclude));
         assert!(!is_excluded(r"C:\Users\me\Documents\resume.pdf", &exclude));
     }
 

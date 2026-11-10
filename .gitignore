@@ -1,1 +1,6 @@
 target/
+dist/
+# Local workspace settings and unrelated personal files.
+/.*/
+!/.github/
+/*.mid

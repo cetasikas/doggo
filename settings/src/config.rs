@@ -13,6 +13,7 @@ const MISSING_KEYS: &str = include_str!("../../src/config-0.3.toml");
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub hotkey: String,
+    pub windows_key_search: bool,
     pub max_results: i64,
     pub theme: String,
     pub backdrop: String,
@@ -81,6 +82,7 @@ impl Config {
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
             hotkey: string("hotkey")?,
+            windows_key_search: boolean("windows_key_search")?,
             max_results,
             theme,
             backdrop,
@@ -196,6 +198,8 @@ impl Store {
 
 fn validate_edit(key: &str, value: &Value) -> Result<(), String> {
     match key {
+        "windows_key_search" if !value.is_bool() => return Err("windows_key_search must be true or false.".into()),
+        "windows_key_search" => {}
         "hotkey" => {
             crate::hotkey::parse(value.as_str().ok_or("Shortcut must be text.")?)?;
         }

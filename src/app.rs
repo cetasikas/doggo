@@ -39,6 +39,7 @@ const WM_APP_FRAME: u32 = WM_APP + 8;
 const WM_APP_INDEX: u32 = WM_APP + 2;
 const WM_APP_FILES: u32 = WM_APP + 5;
 const WM_APP_SHOW: u32 = WM_APP + 3;
+const WM_APP_SHOW_DOCK: u32 = WM_APP + 31;
 const WM_APP_QUIT: u32 = WM_APP + 4;
 /// wisp-settings posts this message after it changes the config.
 const WM_APP_RELOAD: u32 = WM_APP + 6;
@@ -75,6 +76,8 @@ const DEFER_INDEX: u8 = 1;
 const DEFER_FILES: u8 = 4;
 const DEFER_HIDE: u8 = 2;
 const DEFER_COMMANDS: u8 = 8;
+const DEFER_RELOAD: u8 = 16;
+const DEFER_POPUP_FOCUS: u8 = 32;
 
 thread_local! {
     static LAUNCHER: RefCell<Option<Launcher>> = const { RefCell::new(None) };
@@ -111,6 +114,12 @@ fn run_deferred() {
                 return false;
             };
             if let Some(l) = launcher.as_mut() {
+                if work & DEFER_POPUP_FOCUS != 0 {
+                    l.release_dock_keyboard();
+                }
+                if work & DEFER_RELOAD != 0 {
+                    l.reload_settings();
+                }
                 if work & DEFER_INDEX != 0 {
                     l.drain_index_events();
                 }
@@ -151,7 +160,13 @@ pub fn run() -> Result<()> {
                     let mut pid = 0;
                     GetWindowThreadProcessId(existing, Some(&mut pid));
                     let _ = AllowSetForegroundWindow(pid);
-                    let msg = if flag("--quit") { WM_APP_QUIT } else { WM_APP_SHOW };
+                    let msg = if flag("--quit") {
+                        WM_APP_QUIT
+                    } else if flag("--show") {
+                        WM_APP_SHOW
+                    } else {
+                        WM_APP_SHOW_DOCK
+                    };
                     let _ = PostMessageW(Some(existing), msg, WPARAM(0), LPARAM(0));
                     return Ok(());
                 }
@@ -227,7 +242,6 @@ pub fn run() -> Result<()> {
         )?;
 
         // Config::load creates the config on first run.
-        let first_run = !Config::path().exists();
         let (config, config_error) = Config::load();
         let (events_tx, events_rx) = channel();
         let (files_tx, files_rx) = channel();
@@ -239,6 +253,9 @@ pub fn run() -> Result<()> {
             config,
             config_mtime: Config::modified(),
             registered_hotkey: None,
+            win_tap_hook: None,
+            keyboard_dock: false,
+            native_taskbar_peek: None,
             tray_icon: small_icon,
             palette: Palette::new(true, true),
             renderer,
@@ -291,7 +308,7 @@ pub fn run() -> Result<()> {
             if crate::util::perf::hook_on("WISP_CAPTURE") {
                 if !matches!(
                     crate::util::perf::hook("WISP_CAPTURE_SCENARIO").as_deref(),
-                    Some("hidden" | "reel")
+                    Some("hidden" | "reel" | "dock-typing" | "launch-dock")
                 ) && let Some(dock) = &mut l.dock
                 {
                     dock.hold(
@@ -335,9 +352,6 @@ pub fn run() -> Result<()> {
             }
             if flag("--show") {
                 l.show();
-            } else if first_run && let Err(error) = launch::settings(true) {
-                // Onboarding is optional. Without the settings app, Wisp starts as usual.
-                tray::notify(l.hwnd, "Could not open Settings", &error.message(), true);
             }
         });
 
@@ -392,6 +406,9 @@ struct Launcher {
     config_mtime: Option<SystemTime>,
     /// Registered shortcut; may differ from `config.hotkey` if registration fails.
     registered_hotkey: Option<String>,
+    win_tap_hook: Option<hotkey::WinTapHook>,
+    keyboard_dock: bool,
+    native_taskbar_peek: Option<Instant>,
     tray_icon: HICON,
     palette: Palette,
     renderer: Renderer,
@@ -523,6 +540,14 @@ impl Launcher {
     /// Tries to restore the previous shortcut if the new shortcut cannot be
     /// registered, so an invalid config does not disable access to the launcher.
     fn register_hotkey(&mut self, report_errors: bool) {
+        if self.config.windows_key_search && self.win_tap_hook.is_none() {
+            match hotkey::WinTapHook::install(self.hwnd) {
+                Ok(hook) => self.win_tap_hook = Some(hook),
+                Err(error) => tray::notify(self.hwnd, "Doggo Windows key", &error.message(), true),
+            }
+        } else if !self.config.windows_key_search {
+            self.win_tap_hook = None;
+        }
         if self.registered_hotkey.as_deref() == Some(self.config.hotkey.as_str()) {
             return;
         }
@@ -577,11 +602,21 @@ impl Launcher {
             tray::notify(self.hwnd, "Wisp config", &error, true);
             return;
         }
+        if self.keyboard_dock {
+            self.hide();
+        }
         self.config = config;
         self.taskbar_failures = 0;
         self.sync_shell();
         self.apply_theme();
         self.register_hotkey(true);
+    }
+
+    fn reload_settings(&mut self) {
+        self.reload_config_if_changed();
+        if let Some(dock) = &mut self.dock {
+            dock.reload_pins();
+        }
     }
 
     /// Hides or restores the Windows taskbar and creates or removes the dock
@@ -617,9 +652,11 @@ impl Launcher {
             // Notification icons need a home while the taskbar is hidden.
             dock.set_tray(self.taskbar.as_ref().is_some_and(TaskbarHider::is_active));
             dock.set_autohide(self.config.dock_autohide);
-            if self.visible { dock.hide() } else { dock.show() }
         }
         self.sync_reserve();
+        if let Some(dock) = &mut self.dock {
+            if self.visible { dock.hide() } else { dock.show() }
+        }
     }
 
     /// Keeps maximized windows above a dock that stays visible while the
@@ -655,9 +692,17 @@ impl Launcher {
 
     /// Shows the Windows taskbar for a moment, from the dock's chevron menu.
     fn peek_taskbar(&mut self) {
-        let Some(hider) = &mut self.taskbar else { return };
-        if let Err(e) = hider.peek() {
+        let result = if let Some(hider) = &mut self.taskbar {
+            self.native_taskbar_peek = None;
+            hider.peek()
+        } else {
+            self.native_taskbar_peek = Some(Instant::now());
+            taskbar::show_native_taskbar()
+        };
+        if let Err(e) = result {
+            self.native_taskbar_peek = None;
             eprintln!("could not show the taskbar: {e}");
+            tray::notify(self.hwnd, "Could not show Windows taskbar", &e.message(), true);
             return;
         }
         // The dock would cover the taskbar.
@@ -675,9 +720,12 @@ impl Launcher {
                 eprintln!("could not hide the taskbar: {e}");
                 true
             }),
-            None => true,
+            None => self
+                .native_taskbar_peek
+                .is_none_or(|start| taskbar::peek_finished(start).unwrap_or(true)),
         };
         if done {
+            self.native_taskbar_peek = None;
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), PEEK_TIMER);
             }
@@ -768,7 +816,57 @@ impl Launcher {
         if self.visible { self.hide() } else { self.show() }
     }
 
+    fn toggle_keyboard_dock(&mut self) {
+        if self.visible || self.keyboard_dock {
+            self.hide();
+            return;
+        }
+        self.show_keyboard_dock();
+    }
+
+    fn show_keyboard_dock(&mut self) {
+        if self.keyboard_dock {
+            return;
+        }
+        if self.visible {
+            self.hide();
+        }
+        self.reload_config_if_changed();
+        // A second tap can arrive before the previous search has shrunk away.
+        if self.morph.take().is_some() {
+            self.outline = None;
+            self.morphed = false;
+            self.set_collapsed_style(true);
+            self.apply_theme();
+        }
+        let Some(dock) = &mut self.dock else {
+            self.show();
+            return;
+        };
+        self.previous_foreground = unsafe { GetForegroundWindow() };
+        self.keyboard_dock = true;
+        let hwnd = dock.keyboard_open();
+        if !crate::util::perf::hook_on("WISP_CAPTURE") {
+            unsafe {
+                let _ = SetForegroundWindow(hwnd);
+                let _ = SetFocus(Some(hwnd));
+            }
+        }
+    }
+
+    fn release_dock_keyboard(&mut self) {
+        if std::mem::take(&mut self.keyboard_dock)
+            && let Some(dock) = &mut self.dock
+        {
+            dock.keyboard_release(false);
+        }
+    }
+
     fn show(&mut self) {
+        let from_keyboard_dock = std::mem::take(&mut self.keyboard_dock);
+        if from_keyboard_dock && let Some(dock) = &mut self.dock {
+            dock.keyboard_release(false);
+        }
         let _span = util::perf::Span::new("show");
         util::perf::input("show_to_content");
         self.reload_config_if_changed();
@@ -785,8 +883,8 @@ impl Launcher {
             self.last_scan = Instant::now();
         }
         // Selecting the previous query lets the user replace it by typing.
-        let should_morph =
-            self.unified() && (self.morph.is_some() || self.dock.as_ref().is_some_and(Dock::mostly_visible));
+        let should_morph = self.unified()
+            && (from_keyboard_dock || self.morph.is_some() || self.dock.as_ref().is_some_and(Dock::mostly_visible));
         self.morphed = should_morph;
         let from = if self.unified() {
             let rect = self.outline.unwrap_or_else(|| self.current_rect());
@@ -810,7 +908,7 @@ impl Launcher {
             opening: true,
             from_opacity: opacity,
         });
-        if !self.visible {
+        if !self.visible && !from_keyboard_dock {
             self.previous_foreground = unsafe { GetForegroundWindow() };
         }
         self.editor.select_all();
@@ -852,6 +950,16 @@ impl Launcher {
 
     fn hide(&mut self) {
         self.drag_press = None;
+        if std::mem::take(&mut self.keyboard_dock)
+            && let Some(dock) = &mut self.dock
+        {
+            let hwnd = dock.keyboard_release(true);
+            unsafe {
+                if GetForegroundWindow() == hwnd && !self.previous_foreground.is_invalid() {
+                    let _ = SetForegroundWindow(self.previous_foreground);
+                }
+            }
+        }
         if !self.visible {
             return;
         }
@@ -906,7 +1014,11 @@ impl Launcher {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(dpi_x),
             );
-            if self.unified() { info.rcMonitor } else { info.rcWork }
+            if self.unified() && self.taskbar.as_ref().is_some_and(TaskbarHider::is_active) {
+                info.rcMonitor
+            } else {
+                info.rcWork
+            }
         };
 
         let margin = self.px(16.0);
@@ -1589,6 +1701,18 @@ impl Launcher {
     fn on_key(&mut self, vk: VIRTUAL_KEY) -> bool {
         let down = |key: VIRTUAL_KEY| unsafe { GetKeyState(key.0 as i32) < 0 };
         let (ctrl, shift) = (down(VK_CONTROL), down(VK_SHIFT));
+        if self.keyboard_dock {
+            if vk == VK_ESCAPE {
+                self.hide();
+                return true;
+            }
+            if ctrl && vk == VK_V {
+                self.editor = crate::editor::Editor::default();
+                self.show();
+            } else {
+                return false;
+            }
+        }
         if self.surface.is_some() && self.on_surface_key(vk, ctrl, shift) {
             self.restart_caret();
             return true;
@@ -1671,6 +1795,13 @@ impl Launcher {
     }
 
     fn on_char(&mut self, unit: u16) {
+        if self.keyboard_dock {
+            if !starts_dock_search(unit) {
+                return;
+            }
+            self.editor = crate::editor::Editor::default();
+            self.show();
+        }
         // Space presses the focused widget, unless it is part of a filter.
         if unit == u16::from(b' ') && self.surface.is_some() && self.editor.text().is_empty() {
             self.activate_surface();
@@ -1831,7 +1962,7 @@ impl Launcher {
 
     fn on_tray_command(&mut self, cmd: u32) {
         match cmd {
-            tray::CMD_OPEN => self.show(),
+            tray::CMD_OPEN => self.show_keyboard_dock(),
             tray::CMD_RESCAN => {
                 self.indexer.rescan();
                 self.last_scan = Instant::now();
@@ -2151,6 +2282,7 @@ impl Launcher {
     }
 
     fn shutdown(&mut self) {
+        self.win_tap_hook = None;
         self.dock = None;
         if let Err(e) = TaskbarHider::configure(&mut self.taskbar, self.hwnd, false) {
             eprintln!("could not restore the taskbar: {e}");
@@ -2170,6 +2302,20 @@ impl Launcher {
 
 fn loword(v: usize) -> u32 {
     (v & 0xFFFF) as u32
+}
+
+fn starts_dock_search(unit: u16) -> bool {
+    unit >= 0x20 && !(0x7f..=0x9f).contains(&unit)
+}
+
+fn dock_power_action(id: usize) -> Option<crate::commands::power::Power> {
+    use crate::commands::power::Power;
+    match id {
+        1 => Some(Power::Lock),
+        2 => Some(Power::Restart),
+        3 => Some(Power::ShutDown),
+        _ => None,
+    }
 }
 
 fn mouse_pos(lparam: LPARAM) -> (i32, i32) {
@@ -2228,7 +2374,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             msg,
             WM_ACTIVATE
                 | WM_HOTKEY
+                | hotkey::WM_WIN_TAP
                 | WM_APP_SHOW
+                | WM_APP_SHOW_DOCK
                 | WM_KEYDOWN
                 | WM_SYSKEYDOWN
                 | WM_CHAR
@@ -2254,6 +2402,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                             | WM_MOUSELEAVE
                             | WM_MOUSEACTIVATE
                             | WM_LBUTTONDOWN
+                            | WM_CAPTURECHANGED
+                            | WM_CANCELMODE
                             | WM_LBUTTONUP
                             | WM_MBUTTONUP
                             | WM_RBUTTONUP
@@ -2267,6 +2417,38 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         return with_launcher(|l| l.dock.as_ref().unwrap().dispatch(msg, wparam, lparam)).unwrap_or(LRESULT(0));
     }
     match msg {
+        hotkey::WM_WIN_TAP => {
+            with_launcher(Launcher::toggle_keyboard_dock);
+            return LRESULT(0);
+        }
+        dock::WM_KEYBOARD_CHAR => {
+            with_launcher(|l| {
+                if l.keyboard_dock || l.visible {
+                    l.on_char(wparam.0 as u16);
+                }
+            });
+            return LRESULT(0);
+        }
+        dock::WM_KEYBOARD_KEY => {
+            with_launcher(|l| {
+                if l.keyboard_dock || l.visible {
+                    l.on_key(VIRTUAL_KEY(wparam.0 as u16));
+                }
+            });
+            return LRESULT(0);
+        }
+        dock::WM_KEYBOARD_BLUR => {
+            with_launcher(|l| {
+                if l.keyboard_dock {
+                    if l.dock.as_ref().is_some_and(|d| d.owns_popup(HWND(lparam.0 as _))) {
+                        l.release_dock_keyboard();
+                    } else {
+                        l.hide();
+                    }
+                }
+            });
+            return LRESULT(0);
+        }
         // DWM needs the frame styles for acrylic. Make the full window client area.
         WM_NCCALCSIZE if wparam.0 != 0 => return LRESULT(0),
         // Keep the activation state but never paint the caption. It lands on
@@ -2281,6 +2463,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_APP_SHOW => {
             with_launcher(Launcher::show);
+        }
+        WM_APP_SHOW_DOCK => {
+            with_launcher(Launcher::show_keyboard_dock);
         }
         #[cfg(feature = "perf-trace")]
         WM_TIMER if wparam.0 == 97 && crate::util::perf::hook_on("WISP_CAPTURE") => {
@@ -2324,6 +2509,89 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let _ = KillTimer(Some(l.hwnd), 98);
                 }
                 let scenario = crate::util::perf::hook("WISP_CAPTURE_SCENARIO").unwrap_or_default();
+                #[cfg(feature = "perf-trace")]
+                if scenario == "dock-controls" {
+                    l.dock.as_mut().unwrap().capture_verify_controls();
+                    util::perf::event("dock_controls_verified");
+                    return;
+                }
+                #[cfg(feature = "perf-trace")]
+                if scenario == "tray-access" {
+                    assert!(!l.config.hide_taskbar && l.taskbar.is_none());
+                    l.dock.as_ref().unwrap().capture_verify_tray_access();
+                    l.peek_taskbar();
+                    assert!(
+                        l.native_taskbar_peek.is_some(),
+                        "Native tray fallback must work without a hider"
+                    );
+                    util::perf::event("tray_access_verified");
+                    return;
+                }
+                #[cfg(feature = "perf-trace")]
+                if scenario == "launch-dock" {
+                    thread_local! { static LAUNCH_STEP: Cell<u8> = const { Cell::new(0) }; }
+                    let step = LAUNCH_STEP.with(|s| {
+                        let step = s.get();
+                        s.set(step + 1);
+                        step
+                    });
+                    if step == 0 {
+                        assert!(!l.visible && !l.keyboard_dock, "Startup must not open search");
+                    } else if step == 2 {
+                        assert!(l.visible && !l.keyboard_dock, "Explicit --show must open search");
+                    } else {
+                        assert!(
+                            l.keyboard_dock && !l.visible && l.morph.is_none(),
+                            "Normal launches must reveal only the dock"
+                        );
+                        if step == 3 {
+                            util::perf::event("normal_launch_verified");
+                            return;
+                        }
+                        l.show_keyboard_dock();
+                        assert!(
+                            l.keyboard_dock && !l.visible,
+                            "Opening an already revealed dock must be idempotent"
+                        );
+                    }
+                    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+                    if step == 1 {
+                        child.arg("--show");
+                    }
+                    assert!(child.status().unwrap().success());
+                    unsafe {
+                        SetTimer(Some(l.hwnd), 98, 80, None);
+                    }
+                    return;
+                }
+                #[cfg(feature = "perf-trace")]
+                if scenario == "dock-typing" {
+                    l.editor.insert("old query");
+                    l.toggle_keyboard_dock();
+                    assert!(l.keyboard_dock && !l.visible);
+                    l.on_key(VK_RETURN);
+                    l.on_char(13);
+                    assert!(l.keyboard_dock && !l.visible);
+                    l.on_char(u16::from(b'n'));
+                    l.on_char(u16::from(b'o'));
+                    assert!(l.visible && !l.keyboard_dock);
+                    assert_eq!(l.editor.text(), "no");
+                    assert!(!l.unified() || l.morph.is_some());
+                    l.toggle_keyboard_dock(); // Close search, then reopen during its morph.
+                    l.toggle_keyboard_dock();
+                    assert!(l.keyboard_dock && !l.visible && l.morph.is_none());
+                    l.on_key(VK_ESCAPE);
+                    assert!(!l.keyboard_dock && !l.visible);
+                    l.toggle_keyboard_dock();
+                    l.on_char(0xd83d);
+                    l.on_char(0xde00);
+                    l.on_char(u16::from(b'x'));
+                    assert_eq!(l.editor.text(), "\u{1f600}x");
+                    assert!(l.visible && !l.keyboard_dock);
+                    l.paint();
+                    util::perf::event("dock_typing_verified");
+                    return;
+                }
                 eprintln!(
                     "scenario={scenario} visible={} morph={} return_to_dock={}",
                     l.visible,
@@ -2392,12 +2660,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let _ = DestroyWindow(hwnd);
         },
         WM_APP_RELOAD => {
-            with_launcher(|l| {
-                l.reload_config_if_changed();
-                if let Some(dock) = &mut l.dock {
-                    dock.reload_pins();
-                }
-            });
+            with_launcher_or_defer(DEFER_RELOAD, Launcher::reload_settings);
         }
         WM_APP_FRAME => {
             with_launcher(|l| {
@@ -2410,7 +2673,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_APP_INDEX => with_launcher_or_defer(DEFER_INDEX, Launcher::drain_index_events),
         WM_APP_FILES => with_launcher_or_defer(DEFER_FILES, Launcher::drain_file_results),
         WM_APP_COMMANDS => with_launcher_or_defer(DEFER_COMMANDS, Launcher::drain_command_events),
-        WM_ACTIVATE if loword(wparam.0) == WA_INACTIVE => with_launcher_or_defer(DEFER_HIDE, Launcher::hide),
+        WM_ACTIVATE if loword(wparam.0) == WA_INACTIVE => {
+            let owned_popup = unsafe { GetWindow(HWND(lparam.0 as _), GW_OWNER) }.is_ok_and(|owner| owner == hwnd);
+            if owned_popup {
+                with_launcher_or_defer(DEFER_POPUP_FOCUS, Launcher::release_dock_keyboard);
+            } else {
+                with_launcher_or_defer(DEFER_HIDE, Launcher::hide);
+            }
+        }
         WM_DPICHANGED => {
             with_launcher(|l| l.on_dpi_changed(loword(wparam.0)));
             return LRESULT(0);
@@ -2553,6 +2823,30 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         dock::WM_DOCK_SHOW_TASKBAR => {
             with_launcher(Launcher::peek_taskbar);
         }
+        dock::WM_DOCK_POWER => {
+            use crate::commands::power;
+            let Some(action) = dock_power_action(wparam.0) else {
+                return LRESULT(0);
+            };
+            if action.needs_confirmation() {
+                let title = HSTRING::from(format!("{} this computer?", action.title()));
+                if unsafe {
+                    MessageBoxW(
+                        Some(hwnd),
+                        w!("Save your work before continuing."),
+                        &title,
+                        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
+                    )
+                } != IDYES
+                {
+                    return LRESULT(0);
+                }
+            }
+            if let Err(error) = power::run(action) {
+                tray::notify(hwnd, "Power action failed", &error, true);
+            }
+            return LRESULT(0);
+        }
         WM_TIMER if wparam.0 == PEEK_TIMER => {
             with_launcher(Launcher::peek_tick);
         }
@@ -2602,6 +2896,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 #[cfg(test)]
 mod tests {
     use super::mouse_moved;
+
+    #[test]
+    fn dock_power_menu_only_exposes_requested_actions_and_confirms_destructive_ones() {
+        use crate::commands::power::Power;
+        assert_eq!(super::dock_power_action(1), Some(Power::Lock));
+        assert!(!super::dock_power_action(1).unwrap().needs_confirmation());
+        assert_eq!(super::dock_power_action(2), Some(Power::Restart));
+        assert!(super::dock_power_action(2).unwrap().needs_confirmation());
+        assert_eq!(super::dock_power_action(3), Some(Power::ShutDown));
+        assert!(super::dock_power_action(3).unwrap().needs_confirmation());
+        assert!(super::dock_power_action(0).is_none());
+        assert!(super::dock_power_action(4).is_none());
+    }
 
     #[test]
     fn stationary_cursor_keeps_selection_across_layout_changes() {

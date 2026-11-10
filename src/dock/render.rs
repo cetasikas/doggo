@@ -232,6 +232,92 @@ impl Renderer {
         })
     }
 
+    pub fn draw_volume(
+        &mut self,
+        hwnd: HWND,
+        dpi: u32,
+        p: &Palette,
+        level: Option<(u32, bool)>,
+        mute_focus: bool,
+    ) -> Result<()> {
+        self.paint(hwnd, dpi, p, |target, formats| {
+            background(target, p, 1.0);
+            let (percent, muted) = level.unwrap_or((0, true));
+            let rt = &target.rt;
+            let brush = &target.brush;
+            let top = super::volume::TRACK_TOP;
+            let bottom = super::volume::TRACK_BOTTOM;
+            let y = bottom - percent as f32 / 100.0 * (bottom - top);
+            unsafe {
+                brush.SetColor(&p.subtext);
+                text(
+                    rt,
+                    brush,
+                    &formats.small,
+                    &level.map_or_else(|| "--".into(), |_| format!("{percent}%")),
+                    rect(4.0, 4.0, 60.0, 28.0),
+                );
+                brush.SetColor(&p.scrollbar);
+                rt.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: rect(29.0, top, 35.0, bottom),
+                        radiusX: 3.0,
+                        radiusY: 3.0,
+                    },
+                    brush,
+                );
+                brush.SetColor(&p.accent);
+                rt.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: rect(29.0, y, 35.0, bottom),
+                        radiusX: 3.0,
+                        radiusY: 3.0,
+                    },
+                    brush,
+                );
+                rt.FillEllipse(
+                    &D2D1_ELLIPSE {
+                        point: windows_numerics::Vector2 { X: 32.0, Y: y },
+                        radiusX: 6.0,
+                        radiusY: 6.0,
+                    },
+                    brush,
+                );
+                brush.SetColor(if mute_focus { &p.row_selected } else { &p.tile });
+                rt.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: rect(12.0, 192.0, 52.0, 224.0),
+                        radiusX: 8.0,
+                        radiusY: 8.0,
+                    },
+                    brush,
+                );
+                brush.SetColor(&p.text);
+                text(
+                    rt,
+                    brush,
+                    &formats.glyph,
+                    volume_glyph(percent, muted),
+                    rect(12.0, 192.0, 52.0, 224.0),
+                );
+                if mute_focus {
+                    brush.SetColor(&p.accent);
+                    rt.DrawRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: rect(12.0, 192.0, 52.0, 224.0),
+                            radiusX: 8.0,
+                            radiusY: 8.0,
+                        },
+                        brush,
+                        1.0,
+                        None,
+                    );
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// A tooltip's window size in DIPs, wrapping past `max` DIPs of text.
     pub fn measure_tip(&self, tip: &str, max: f32) -> Result<(f32, f32)> {
         let wide: Vec<u16> = tip.encode_utf16().collect();
@@ -774,17 +860,33 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
             );
         }
         match part {
-            Part::Chevron => {
+            Part::Chevron | Part::Power => {
                 unsafe { target.brush.SetColor(&p.text) };
                 // Up opens the flyout and down closes it, as on the taskbar.
-                let glyph = if frame.flyout_open { "\u{E70D}" } else { "\u{E70E}" };
+                let glyph = if part == Part::Power {
+                    "\u{E7E8}"
+                } else if frame.flyout_open {
+                    "\u{E70D}"
+                } else {
+                    "\u{E70E}"
+                };
                 let area = rect(
                     left,
                     TILE_TOP * frame.layout_scale,
                     right,
                     TILE_BOTTOM * frame.layout_scale,
                 );
-                text(&target.rt, &target.brush, &formats.chevron, glyph, area);
+                text(
+                    &target.rt,
+                    &target.brush,
+                    if part == Part::Power {
+                        &formats.glyph
+                    } else {
+                        &formats.chevron
+                    },
+                    glyph,
+                    area,
+                );
                 continue;
             }
             Part::Tray(index) => {
@@ -840,7 +942,7 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                     brush.SetColor(&p.subtext);
                     text(rt, brush, &formats.small, &status.date, lower);
                 }
-                Part::Chevron | Part::Tray(_) => {}
+                Part::Chevron | Part::Tray(_) | Part::Power => {}
             }
         }
     }

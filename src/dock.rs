@@ -15,6 +15,8 @@ pub mod space;
 mod status;
 #[path = "dock/tray.rs"]
 mod tray;
+#[path = "dock/volume.rs"]
+mod volume;
 
 /// Reserved height in DIPs at the default app icon size.
 pub const DEFAULT_RESERVED_HEIGHT: f32 = logic::HEIGHT + 2.0 * logic::MARGIN;
@@ -35,8 +37,8 @@ use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetDoubleClickTime, GetKeyState, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
-    VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
+    GetAsyncKeyState, GetDoubleClickTime, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT,
+    TrackMouseEvent, VK_ESCAPE, VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
 };
 use windows::Win32::UI::Input::{RAWINPUTDEVICE, RIDEV_INPUTSINK, RIDEV_REMOVE, RegisterRawInputDevices};
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
@@ -56,7 +58,11 @@ const WM_TRAY_CHANGED: u32 = WM_APP + 22;
 /// Asks the owner to show the Windows taskbar for a moment, for icons the
 /// dock lacks.
 pub const WM_DOCK_SHOW_TASKBAR: u32 = WM_APP + 23;
+pub const WM_DOCK_POWER: u32 = WM_APP + 28;
 const WM_CLOSE_FLYOUT: u32 = WM_APP + 24;
+pub const WM_KEYBOARD_CHAR: u32 = WM_APP + 25;
+pub const WM_KEYBOARD_KEY: u32 = WM_APP + 26;
+pub const WM_KEYBOARD_BLUR: u32 = WM_APP + 27;
 /// Shows a notification icon's tooltip after a short hover.
 const TIP_TIMER: usize = 104;
 const TIP_MS: u32 = 450;
@@ -106,6 +112,11 @@ struct State {
     icons: HashMap<String, Arc<IconPixels>>,
     items: Vec<Item>,
     pinned: Vec<AppEntry>,
+    pin_drag: Option<(String, i32, i32, bool)>,
+    suppress_pin_click: bool,
+    keyboard: bool,
+    taskbar_hidden: bool,
+    volume_popup: Option<volume::Popup>,
     palette: Palette,
     backdrop: Backdrop,
     window_list_mode: WindowListMode,
@@ -216,6 +227,11 @@ impl Dock {
             icons: HashMap::new(),
             items: Vec::new(),
             pinned: load_pins(),
+            pin_drag: None,
+            suppress_pin_click: false,
+            keyboard: false,
+            taskbar_hidden: false,
+            volume_popup: None,
             palette: Palette::new(true, true),
             backdrop: Backdrop::Acrylic,
             window_list_mode: WindowListMode::default(),
@@ -404,6 +420,12 @@ impl Dock {
         self.shared
     }
 
+    pub fn owns_popup(&self, hwnd: HWND) -> bool {
+        self.state
+            .try_borrow()
+            .is_ok_and(|s| s.volume_popup.as_ref().is_some_and(|p| p.hwnd() == hwnd))
+    }
+
     pub fn dispatch(&self, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         unsafe { wndproc(self.hwnd, msg, wp, lp) }
     }
@@ -437,6 +459,40 @@ impl Dock {
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         }
         s.start_slide(to);
+    }
+
+    #[cfg(feature = "perf-trace")]
+    pub fn capture_verify_tray_access(&self) {
+        let s = self.state.borrow();
+        assert!(
+            s.parts().contains(&logic::Part::Chevron),
+            "Tray access must remain available without a host"
+        );
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        unsafe {
+            assert!(GetMonitorInfoW(MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST), &mut info).as_bool());
+        }
+        let dock = self.resting_rect();
+        assert!(
+            dock.bottom <= info.rcWork.bottom,
+            "The dock must not cover Explorer's taskbar"
+        );
+        assert!(dock.left >= info.rcWork.left && dock.right <= info.rcWork.right);
+    }
+
+    #[cfg(feature = "perf-trace")]
+    pub fn capture_verify_controls(&mut self) {
+        let mut s = self.state.borrow_mut();
+        assert!(s.parts().contains(&logic::Part::Power));
+        let anchor = s.part_rect(logic::Part::Power).unwrap();
+        let mut popup = volume::Popup::new(s.hwnd).unwrap();
+        popup.open(anchor, s.palette.text.r > 0.5, s.backdrop);
+        popup.capture_verify();
+        // Never invoke a power command or change the user's audio in a capture.
+        s.volume_popup = Some(popup);
     }
 
     pub fn animating(&self) -> bool {
@@ -548,6 +604,10 @@ impl Dock {
     /// should follow the hidden taskbar. Failure leaves icons to Explorer.
     pub fn set_tray(&mut self, enabled: bool) {
         let mut s = self.state.borrow_mut();
+        if s.taskbar_hidden != enabled {
+            s.taskbar_hidden = enabled;
+            s.place();
+        }
         if enabled == s.tray_host.is_some() {
             return;
         }
@@ -586,6 +646,45 @@ impl Dock {
         s.stop_slide();
         s.start_poll(POLL_MS);
         s.refresh();
+    }
+
+    /// Reveal the normal dock and receive text without drawing the launcher.
+    pub fn keyboard_open(&mut self) -> HWND {
+        let mut s = self.state.borrow_mut();
+        s.keyboard = true;
+        s.suspended = false;
+        s.surface_rect = None;
+        s.visible = true;
+        s.reveal();
+        s.start_poll(POLL_MS);
+        unsafe {
+            let style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, style & !(WS_EX_NOACTIVATE.0 as isize));
+            let _ = ShowWindow(
+                self.hwnd,
+                if crate::util::perf::hook_on("WISP_CAPTURE") {
+                    SW_SHOWNOACTIVATE
+                } else {
+                    SW_SHOW
+                },
+            );
+        }
+        self.hwnd
+    }
+
+    pub fn keyboard_release(&mut self, dismiss: bool) -> HWND {
+        let mut s = self.state.borrow_mut();
+        s.keyboard = false;
+        unsafe {
+            let style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE.0 as isize);
+            if dismiss && s.autohide {
+                s.revealed = false;
+                s.stop_slide();
+                let _ = ShowWindow(self.hwnd, SW_HIDE);
+            }
+        }
+        self.hwnd
     }
     /// Reveals the dock for good, with a fixed hover, so screenshots can show it
     /// without moving the pointer.
@@ -651,6 +750,12 @@ impl Dock {
     /// Hides the dock until `show`, such as while the launcher is open.
     pub fn hide(&mut self) {
         let mut s = self.state.borrow_mut();
+        if s.pin_drag.take().is_some() {
+            unsafe {
+                let _ = ReleaseCapture();
+            }
+            s.save_pins();
+        }
         s.close_flyout();
         s.hide_tip();
         s.hide_windows();
@@ -832,7 +937,7 @@ impl State {
         if self.suspended {
             return;
         }
-        self.fullscreen = fullscreen_foreground(self.hwnd);
+        self.fullscreen = !self.keyboard && fullscreen_foreground(self.hwnd);
         if !self.fullscreen {
             self.refresh_window_titles();
         }
@@ -903,12 +1008,21 @@ impl State {
     /// it has been away for a moment.
     fn poll(&mut self) {
         let _span = crate::util::perf::Span::new("dock_poll");
+        // A nonactivating dock cannot rely on foreground mouse capture outside
+        // its bounds. Finish a release there without leaving the dock held open.
+        if self.pin_drag.is_some() && unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } >= 0 {
+            self.pin_drag = None;
+            unsafe {
+                let _ = ReleaseCapture();
+            }
+            self.save_pins();
+        }
         let mut cursor = POINT::default();
         if unsafe { GetCursorPos(&mut cursor) }.is_err() {
             return;
         }
         let hidden = !self.revealed && self.slide.is_none();
-        if !hidden && fullscreen_foreground(self.hwnd) {
+        if !hidden && !self.keyboard && fullscreen_foreground(self.hwnd) {
             self.stop_slide();
             self.revealed = false;
             self.close_flyout();
@@ -1001,6 +1115,9 @@ impl State {
         let near = !self.autohide
             || self.held
             || self.flyout_open
+            || self.pin_drag.is_some()
+            || self.keyboard
+            || self.volume_popup.as_ref().is_some_and(volume::Popup::visible)
             || over_windows
             || cursor.x >= rect.left - slack && cursor.x < rect.right + slack && cursor.y >= rect.top - slack;
         if near {
@@ -1203,6 +1320,13 @@ impl State {
             if !GetMonitorInfoW(monitor, &mut info).as_bool() {
                 return;
             }
+            // Leave Explorer's visible taskbar and its system controls uncovered.
+            // A hidden taskbar's work area may include our own reserved dock space.
+            let area = if self.taskbar_hidden {
+                info.rcMonitor
+            } else {
+                info.rcWork
+            };
             // Move first, then query the window's new monitor DPI. Skipped on the
             // same monitor, where the jump would show.
             if MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONULL) != monitor {
@@ -1246,7 +1370,7 @@ impl State {
             }
             let parts = self.parts();
             let layout_scale = logic::layout_scale(self.app_icon_size);
-            let available = (info.rcMonitor.right - info.rcMonitor.left) as f32 / scale
+            let available = (area.right - area.left) as f32 / scale
                 - 8.0 * layout_scale
                 - logic::status_width_scaled(&parts, layout_scale)
                 - if !self.pinned.is_empty() && self.items.len() > self.pinned.len() {
@@ -1260,8 +1384,8 @@ impl State {
             self.scroll = self.scroll.min(self.items.len().saturating_sub(self.capacity));
             let width = (self.app_layout().total_width(&parts, layout_scale) * scale).ceil() as i32;
             let height = (logic::height(layout_scale) * scale).round() as i32;
-            let x = info.rcMonitor.left + (info.rcMonitor.right - info.rcMonitor.left - width) / 2;
-            self.top = info.rcMonitor.bottom - height - (logic::margin(layout_scale) * scale).round() as i32;
+            let x = area.left + (area.right - area.left - width) / 2;
+            self.top = area.bottom - height - (logic::margin(layout_scale) * scale).round() as i32;
             self.left = x;
             self.width = width;
             let y = self.top + self.slide_offset(height);
@@ -1381,7 +1505,7 @@ impl State {
         let stale = match self.tip_target {
             Some(tray::Tip::Inline(i)) => i >= self.inline.len(),
             Some(tray::Tip::Flyout(i)) => i >= self.tray.len(),
-            Some(tray::Tip::Chevron) => self.tray_host.is_none(),
+            Some(tray::Tip::Chevron | tray::Tip::Power | tray::Tip::Volume) => false,
             // The desktop pill has nothing to do with the tray.
             None => false,
         };
@@ -1747,7 +1871,20 @@ impl State {
             let _ = KillTimer(Some(self.hwnd), TIP_TIMER);
         }
         let (text, anchor) = match self.tip_target {
-            Some(tray::Tip::Chevron) => ("Show hidden icons".to_string(), self.part_rect(logic::Part::Chevron)),
+            Some(tray::Tip::Power) => (
+                "Power: lock, restart or shut down".to_string(),
+                self.part_rect(logic::Part::Power),
+            ),
+            Some(tray::Tip::Volume) => ("Volume controls".to_string(), self.part_rect(logic::Part::Volume)),
+            Some(tray::Tip::Chevron) => (
+                if self.tray_host.is_some() && !self.tray.is_empty() {
+                    "Show hidden icons"
+                } else {
+                    "Show Windows taskbar"
+                }
+                .to_string(),
+                self.part_rect(logic::Part::Chevron),
+            ),
             Some(tray::Tip::Inline(i)) => (
                 self.inline
                     .get(i)
@@ -1855,13 +1992,19 @@ impl State {
         )
     }
 
-    /// The speaker toggles mute; the clock opens the calendar and notifications;
+    /// The speaker opens volume controls; the clock opens the calendar and notifications;
     /// the battery opens its settings. The chevron toggles the flyout, and
     /// notification icons get the click.
     fn click_part(&mut self, part: logic::Part) {
         let target = match part {
             logic::Part::Chevron => {
-                self.toggle_flyout();
+                if self.tray_host.is_none() || self.tray.is_empty() {
+                    unsafe {
+                        let _ = PostMessageW(Some(self.owner), WM_DOCK_SHOW_TASKBAR, WPARAM(0), LPARAM(0));
+                    }
+                } else {
+                    self.toggle_flyout();
+                }
                 return;
             }
             logic::Part::Tray(position) => {
@@ -1869,12 +2012,30 @@ impl State {
                 return;
             }
             logic::Part::Volume => {
-                if let Some(volume) = self.status.volume
-                    && let Err(error) = crate::commands::audio::set_mute(!volume.muted)
-                {
-                    eprintln!("Dock mute: {error}");
+                self.hide_tip();
+                if self.volume_popup.as_ref().is_some_and(volume::Popup::visible) {
+                    self.volume_popup.as_ref().unwrap().hide();
+                    return;
                 }
-                self.update_status();
+                if self.volume_popup.is_none() {
+                    match volume::Popup::new(self.hwnd) {
+                        Ok(popup) => self.volume_popup = Some(popup),
+                        Err(error) => {
+                            eprintln!("Volume popup: {error}");
+                            return;
+                        }
+                    }
+                }
+                if let Some(anchor) = self.part_rect(logic::Part::Volume) {
+                    self.volume_popup
+                        .as_mut()
+                        .unwrap()
+                        .open(anchor, self.palette.text.r > 0.5, self.backdrop);
+                }
+                return;
+            }
+            logic::Part::Power => {
+                self.power_menu();
                 return;
             }
             logic::Part::Clock => "ms-actioncenter:",
@@ -1882,6 +2043,38 @@ impl State {
         };
         if let Err(error) = crate::launch::open(target) {
             eprintln!("Dock status: {error}");
+        }
+    }
+
+    fn power_menu(&mut self) {
+        self.close_flyout();
+        self.hide_tip();
+        self.hide_windows();
+        unsafe {
+            let Ok(menu) = CreatePopupMenu() else { return };
+            let _ = AppendMenuW(menu, MF_STRING, 1, w!("Lock computer"));
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
+            let _ = AppendMenuW(menu, MF_STRING, 2, w!("Restart..."));
+            let _ = AppendMenuW(menu, MF_STRING, 3, w!("Shut down..."));
+            let Some(anchor) = self.part_rect(logic::Part::Power) else {
+                let _ = DestroyMenu(menu);
+                return;
+            };
+            let _ = SetForegroundWindow(self.hwnd);
+            let command = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RIGHTALIGN,
+                anchor.right,
+                anchor.top,
+                None,
+                self.hwnd,
+                None,
+            )
+            .0;
+            let _ = DestroyMenu(menu);
+            if command != 0 {
+                let _ = PostMessageW(Some(self.owner), WM_DOCK_POWER, WPARAM(command as usize), LPARAM(0));
+            }
         }
     }
 
@@ -2231,6 +2424,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             && let Ok(mut s) = (*pointer).try_borrow_mut()
         {
             match msg {
+                WM_CHAR | WM_KEYDOWN | WM_SYSKEYDOWN if s.hwnd != s.owner => {
+                    let forward = match msg {
+                        WM_CHAR => WM_KEYBOARD_CHAR,
+                        _ => WM_KEYBOARD_KEY,
+                    };
+                    // Include characters already queued when focus moved into search.
+                    let _ = PostMessageW(Some(s.owner), forward, wp, lp);
+                    return LRESULT(0);
+                }
+                WM_ACTIVATE if s.keyboard && s.hwnd != s.owner && u32::from(wp.0 as u16) == WA_INACTIVE => {
+                    let _ = PostMessageW(Some(s.owner), WM_KEYBOARD_BLUR, wp, lp);
+                    return LRESULT(0);
+                }
                 WM_SETTINGCHANGE | WM_POWERBROADCAST | WM_THEMECHANGED => {
                     let dark = s.palette.text.r > 0.5;
                     let backdrop = s.backdrop;
@@ -2303,7 +2509,43 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let _ = PostMessageW(Some(hwnd), WM_REFRESH, WPARAM(0), LPARAM(0));
                     return LRESULT(0);
                 }
+                WM_LBUTTONDOWN => {
+                    s.suppress_pin_click = false;
+                    if let Some(at) = s.hit(lp).and_then(|i| i.checked_sub(1)).map(|i| i + s.scroll)
+                        && let Some(pin) = s.pinned.get(at)
+                    {
+                        s.pin_drag = Some((pin.id.clone(), lp.0 as i16 as i32, (lp.0 >> 16) as i16 as i32, false));
+                        s.hide_windows();
+                        SetCapture(hwnd);
+                    }
+                    return LRESULT(0);
+                }
+                WM_CAPTURECHANGED | WM_CANCELMODE => {
+                    if s.pin_drag.take().is_some() {
+                        if msg == WM_CANCELMODE {
+                            let _ = ReleaseCapture();
+                        }
+                        s.save_pins();
+                    }
+                    return LRESULT(0);
+                }
                 WM_MOUSEMOVE => {
+                    if let Some((id, x, y, dragging)) = s.pin_drag.clone() {
+                        let dx = (lp.0 as i16 as i32 - x).abs();
+                        let dy = ((lp.0 >> 16) as i16 as i32 - y).abs();
+                        if dragging || dx >= GetSystemMetrics(SM_CXDRAG) || dy >= GetSystemMetrics(SM_CYDRAG) {
+                            s.suppress_pin_click = true;
+                            s.pin_drag = Some((id.clone(), x, y, true));
+                            if let Some(to) = s.hit(lp).and_then(|i| i.checked_sub(1)).map(|i| i + s.scroll)
+                                && to < s.pinned.len()
+                                && let Some(from) = s.pinned.iter().position(|pin| pin.id == id)
+                                && logic::reorder(&mut s.pinned, from, to)
+                            {
+                                s.update_pins();
+                            }
+                            return LRESULT(0);
+                        }
+                    }
                     let hover = s.hit(lp);
                     let hover_part = s.hit_part(lp);
                     if s.hover != hover || s.hover_part != hover_part {
@@ -2313,6 +2555,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                     s.hover_tip(match hover_part {
+                        Some(logic::Part::Power) => Some(tray::Tip::Power),
+                        Some(logic::Part::Volume) => Some(tray::Tip::Volume),
                         Some(logic::Part::Chevron) => Some(tray::Tip::Chevron),
                         Some(logic::Part::Tray(i)) => Some(tray::Tip::Inline(i)),
                         _ => None,
@@ -2336,6 +2580,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(0);
                 }
                 WM_LBUTTONUP | WM_MBUTTONUP => {
+                    if msg == WM_LBUTTONUP
+                        && let Some((_, _, _, dragged)) = s.pin_drag.take()
+                    {
+                        let _ = ReleaseCapture();
+                        if dragged {
+                            s.suppress_pin_click = false;
+                            s.save_pins();
+                            return LRESULT(0);
+                        }
+                    }
+                    if msg == WM_LBUTTONUP && std::mem::take(&mut s.suppress_pin_click) {
+                        return LRESULT(0);
+                    }
                     // The dock never takes the focus, so the flyout can't see this click.
                     if s.hit_part(lp) != Some(logic::Part::Chevron) {
                         s.close_flyout();

@@ -52,8 +52,8 @@ impl Release {
 
 /// Returns the latest release if it is newer than this app.
 pub fn check() -> Result<Option<Release>, String> {
-    // Nightly builds are installed by hand; stable releases would replace them.
-    if crate::channel::NIGHTLY {
+    // This personal fork is built locally; upstream binaries would replace it.
+    if crate::channel::MANUAL_UPDATES {
         return Ok(None);
     }
     let body = get(LATEST_URL).map_err(|error| format!("Cannot check for updates: {error}"))?;
@@ -64,6 +64,9 @@ pub fn check() -> Result<Option<Release>, String> {
 /// Downloads, verifies and installs `release`. Restarts the launcher if it was
 /// running. This app keeps running the old version until it restarts.
 pub fn install(release: &Release) -> Result<(), String> {
+    if crate::channel::MANUAL_UPDATES {
+        return Err("Doggo updates must be built from this personal fork.".into());
+    }
     if let Some(manager) = crate::install::current_manager() {
         return Err(manager.instruction().into());
     }

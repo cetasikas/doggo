@@ -306,11 +306,9 @@ impl Settings {
             (0xfaf9f6, 0x111111)
         };
         let title = if self.onboarding.is_some() {
-            "Welcome to Wisp"
-        } else if crate::channel::NIGHTLY {
-            "Wisp Nightly Settings"
+            "Welcome to Doggo"
         } else {
-            "Wisp Settings"
+            "Doggo Settings"
         };
         system::style_title_bar(title, dark, background, text);
     }
@@ -536,7 +534,7 @@ impl Settings {
             ),
             Updates::Checking => ("Checking GitHub for a newer version…".into(), busy("Checking…")),
             Updates::Latest => (
-                format!("Version {current} is the latest version.").into(),
+                format!("Doggo {current} - Personal fork; rebuild locally to update.").into(),
                 check("Check again", cx),
             ),
             Updates::Available(release) => {
@@ -705,6 +703,17 @@ impl Settings {
                         .children(self.conflict_warning(p)),
                 ),
             )
+            .child(row(
+                "Windows key dock",
+                "Tap Windows to open the dock, then type to search. Windows shortcuts still work.",
+                Switch::new("windows-key-search")
+                    .checked(self.config.windows_key_search)
+                    .accessibility_label("Windows key dock")
+                    .on_change(cx.listener(|this, enabled: &bool, window, cx| {
+                        this.save("windows_key_search", (*enabled).into(), window, cx);
+                    })),
+                p,
+            ))
             .child(div().h_3())
             .child(label("Dock", p))
             .child(
@@ -767,7 +776,7 @@ impl Settings {
                     .child(divider(p))
                     .child(row(
                         "Hide the taskbar",
-                        "Hide the Windows taskbar while Wisp runs. The taskbar comes back when Wisp quits.",
+                        "Hide the Windows taskbar while Doggo runs. The taskbar comes back when Doggo quits.",
                         Switch::new("hide-taskbar")
                             .checked(self.config.hide_taskbar)
                             .accessibility_label("Hide the taskbar")
@@ -794,7 +803,7 @@ impl Settings {
             .child(label("Startup", p))
             .child(group(p).child(row(
                 "Start with Windows",
-                "Open Wisp when you sign in.",
+                "Open Doggo when you sign in.",
                 self.autostart_switch(cx),
                 p,
             )))
@@ -941,7 +950,12 @@ impl Settings {
                     .child(img(self.icon.clone()).size(px(40.)))
                     .child(
                         v_flex()
-                            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("Wisp"))
+                            .child(
+                                div()
+                                    .text_base()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Doggo (based on Wisp)"),
+                            )
                             .child(hint(format!("Version {}", env!("CARGO_PKG_VERSION")), p)),
                     ),
             )
@@ -1012,7 +1026,7 @@ impl Settings {
                             .px_2()
                             .pb_4()
                             .child(img(self.icon.clone()).size(px(22.)))
-                            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("wisp")),
+                            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("Doggo")),
                     )
                     .children(
                         Page::ALL
@@ -1049,7 +1063,7 @@ impl Settings {
             group(p).child(item("Shortcut", "Shows or hides the launcher.", p).child(self.shortcut_control(p, cx)));
         let (title, body): (&str, Div) = match step {
             0 => (
-                "Welcome to Wisp",
+                "Welcome to Doggo",
                 v_flex()
                     .gap_4()
                     .child(
@@ -1076,7 +1090,7 @@ impl Settings {
                     .gap_4()
                     .child(group(p).child(row(
                         "Start with Windows",
-                        "Open Wisp when you sign in.",
+                        "Open Doggo when you sign in.",
                         self.autostart_switch(cx),
                         p,
                     )))

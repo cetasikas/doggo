@@ -126,3 +126,36 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    #[test]
+    fn pin_reorder_restart_and_unpin_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dock-pins.toml");
+        let mut pins: Vec<_> = ["one", "two", "three"]
+            .into_iter()
+            .map(|id| Pin {
+                id: id.into(),
+                name: id.into(),
+                path: None,
+            })
+            .collect();
+        save(&path, &pins).unwrap();
+        let moved = pins.remove(2);
+        pins.insert(0, moved);
+        save(&path, &pins).unwrap();
+        let mut restarted = load(&path);
+        assert_eq!(
+            restarted.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["three", "one", "two"]
+        );
+        restarted.remove(1);
+        save(&path, &restarted).unwrap();
+        assert_eq!(
+            load(&path).iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["three", "two"]
+        );
+    }
+}

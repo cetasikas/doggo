@@ -21,6 +21,8 @@ pub struct Shown {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tip {
     Chevron,
+    Power,
+    Volume,
     /// An icon in the dock, by its inline position.
     Inline(usize),
     /// An icon in the flyout, by its index in `shown`.

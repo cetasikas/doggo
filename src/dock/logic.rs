@@ -180,6 +180,7 @@ pub enum Part {
     Volume,
     Battery,
     Clock,
+    Power,
 }
 
 impl Part {
@@ -190,6 +191,7 @@ impl Part {
             Part::Volume => VOLUME_W,
             Part::Battery => BATTERY_W,
             Part::Clock => CLOCK_W,
+            Part::Power => 32.0,
         }
     }
 
@@ -202,13 +204,17 @@ impl Part {
 /// while the dock hosts the notification area, volume needs an output
 /// device, battery a battery.
 pub fn parts(tray: Option<usize>, volume: bool, battery: bool) -> Vec<Part> {
-    let tray = tray.map(|count| std::iter::once(Part::Chevron).chain((0..count.min(MAX_INLINE)).map(Part::Tray)));
-    tray.into_iter()
-        .flatten()
+    std::iter::once(Part::Chevron)
+        .chain((0..tray.unwrap_or(0).min(MAX_INLINE)).map(Part::Tray))
         .chain(
-            [(Part::Volume, volume), (Part::Battery, battery), (Part::Clock, true)]
-                .into_iter()
-                .filter_map(|(part, shown)| shown.then_some(part)),
+            [
+                (Part::Volume, volume),
+                (Part::Battery, battery),
+                (Part::Clock, true),
+                (Part::Power, true),
+            ]
+            .into_iter()
+            .filter_map(|(part, shown)| shown.then_some(part)),
         )
         .collect()
 }
@@ -402,7 +408,10 @@ mod tests {
                     assert_eq!(layout.part_hit(x + 1.0, 10.0, &parts, scale), Some(*part));
                 }
                 let clock = layout.part_left(Part::Clock, &parts, scale).unwrap();
-                assert_eq!(clock + (CLOCK_W + PAD) * scale, layout.total_width(&parts, scale));
+                assert_eq!(
+                    clock + (CLOCK_W + Part::Power.width() + PAD) * scale,
+                    layout.total_width(&parts, scale)
+                );
             }
         }
     }
@@ -558,9 +567,9 @@ mod tests {
             assert_eq!(hit(PAD, HEIGHT, count), None);
             let all = parts(None, true, true);
             let clock = part_left(Part::Clock, count, &all).unwrap();
-            assert_eq!(clock + CLOCK_W + PAD, total_width(count, &all));
+            assert_eq!(clock + CLOCK_W + Part::Power.width() + PAD, total_width(count, &all));
             let volume = part_left(Part::Volume, count, &all).unwrap();
-            assert_eq!(part_hit(volume - 1.0, 20.0, count, &all), None);
+            assert_eq!(part_hit(volume - 1.0, 20.0, count, &all), Some(Part::Chevron));
             assert_eq!(part_hit(clock + 1.0, 20.0, count, &all), Some(Part::Clock));
             assert_eq!(part_hit(clock - 1.0, 20.0, count, &all), Some(Part::Battery));
             assert_eq!(part_hit(clock, HEIGHT, count, &all), None);
@@ -585,7 +594,8 @@ mod tests {
                 Part::Tray(1),
                 Part::Volume,
                 Part::Battery,
-                Part::Clock
+                Part::Clock,
+                Part::Power
             ]
         );
         // The chevron starts right after the apps' separator.
@@ -598,11 +608,12 @@ mod tests {
         assert_eq!(part_hit(volume - 1.0, 20.0, 2, &tray), Some(Part::Tray(1)));
         assert_eq!(
             total_width(2, &tray),
-            total_width(2, &parts(None, true, true)) + CHEVRON_W + 2.0 * TRAY_W
+            total_width(2, &parts(None, true, true)) + 2.0 * TRAY_W
         );
         // Inline icons are capped; with none, only the chevron shows.
-        assert_eq!(parts(Some(9), false, false).len(), 1 + MAX_INLINE + 1);
-        assert_eq!(parts(Some(0), false, false), [Part::Chevron, Part::Clock]);
+        assert_eq!(parts(Some(9), false, false).len(), 1 + MAX_INLINE + 2);
+        assert_eq!(parts(Some(0), false, false), [Part::Chevron, Part::Clock, Part::Power]);
+        assert_eq!(parts(None, false, false), [Part::Chevron, Part::Clock, Part::Power]);
         // Tray icons fit the dock's height budget.
         const { assert!(TRAY_ICON < HEIGHT && TRAY_ICON < TRAY_W) };
     }
@@ -626,5 +637,28 @@ mod tests {
         assert_eq!(flyout_hit(x + 1.0, y + 1.0, 6), None);
         assert_eq!(flyout_hit(FLYOUT_PAD - 1.0, 10.0, 3), None);
         assert_eq!(flyout_hit(FLYOUT_PAD + 5.0 * FLYOUT_CELL + 1.0, 10.0, 9), None);
+    }
+}
+
+/// Move a pin to the hovered slot, preserving the relative order of other pins.
+pub fn reorder<T>(pins: &mut Vec<T>, from: usize, to: usize) -> bool {
+    if from == to || from >= pins.len() || to >= pins.len() {
+        return false;
+    }
+    let pin = pins.remove(from);
+    pins.insert(to, pin);
+    true
+}
+#[cfg(test)]
+mod reorder_tests {
+    #[test]
+    fn moves_both_ways_and_rejects_non_pin_slots() {
+        let mut pins = vec!["a", "b", "c"];
+        assert!(super::reorder(&mut pins, 0, 2));
+        assert_eq!(pins, ["b", "c", "a"]);
+        assert!(super::reorder(&mut pins, 2, 0));
+        assert_eq!(pins, ["a", "b", "c"]);
+        assert!(!super::reorder(&mut pins, 0, 3));
+        assert!(!super::reorder(&mut pins, 0, 0));
     }
 }
