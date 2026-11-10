@@ -1,7 +1,6 @@
 <!--
 Title: one plain-language changelog line, such as
 "Minimize an app when its dock icon is clicked in front".
-See CONTRIBUTING.md for the full guide.
 -->
 
 **What changed**

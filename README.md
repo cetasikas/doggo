@@ -29,7 +29,7 @@ Doggo stores settings and pins in `%APPDATA%\doggo`, separately from Wisp. Open 
 
 Run one dock/taskbar controller at a time. Exit Wisp and any script that remaps the Windows key before using Doggo's native Windows-key option. Normal launches reveal the dock when Doggo is already running; `doggo.exe --show` opens search and `doggo.exe --quit` exits it.
 
-See [DOGGO.md](DOGGO.md) for controls and settings, [VALIDATION.md](VALIDATION.md) for verification limits, and [UPSTREAM.md](UPSTREAM.md) for the contribution plan.
+See [DOGGO.md](DOGGO.md) for controls and settings and [VALIDATION.md](VALIDATION.md) for verification limits.
 
 ## Checks
 

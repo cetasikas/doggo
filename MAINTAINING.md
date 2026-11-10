@@ -1,6 +1,6 @@
 # Maintaining Wisp
 
-How Wisp's pull requests, issues and releases are handled. Contributors follow [CONTRIBUTING.md](CONTRIBUTING.md); this file covers what happens after.
+How upstream Wisp's pull requests, issues and releases are handled.
 
 ## Reviewing pull requests
 

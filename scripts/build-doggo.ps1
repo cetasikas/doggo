@@ -12,7 +12,7 @@ try {
     foreach ($binary in 'doggo.exe', 'doggo-settings.exe') {
         Copy-Item -LiteralPath (Join-Path $repo "target\release\$binary") -Destination $destination -Force
     }
-    foreach ($document in 'LICENSE', 'README.md', 'CHANGELOG.md', 'DOGGO.md', 'VALIDATION.md', 'UPSTREAM.md') {
+    foreach ($document in 'LICENSE', 'README.md', 'CHANGELOG.md', 'DOGGO.md', 'VALIDATION.md') {
         Copy-Item -LiteralPath (Join-Path $repo $document) -Destination $destination -Force
     }
     Get-FileHash (Join-Path $destination '*.exe') | Format-Table -AutoSize
