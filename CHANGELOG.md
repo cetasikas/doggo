@@ -4,6 +4,8 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Doggo personal fork - 2026-11-10
 
+- Keep dock visible now uses a floating overlay. Maximized windows extend behind it instead of losing a strip of screen space.
+
 - Simplify volume controls to a slim vertical slider, percentage and speaker mute button matching the dock.
 
 - Add a power button beside the clock with Lock, Restart and Shut down; restart/shutdown require confirmation.

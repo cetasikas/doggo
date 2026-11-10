@@ -8,8 +8,6 @@ mod logic;
 mod pins;
 #[path = "dock/render.rs"]
 mod render;
-#[path = "dock/space.rs"]
-pub mod space;
 
 #[path = "dock/status.rs"]
 mod status;
@@ -17,9 +15,6 @@ mod status;
 mod tray;
 #[path = "dock/volume.rs"]
 mod volume;
-
-/// Reserved height in DIPs at the default app icon size.
-pub const DEFAULT_RESERVED_HEIGHT: f32 = logic::HEIGHT + 2.0 * logic::MARGIN;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -734,19 +729,6 @@ impl Dock {
         }
     }
 
-    /// Whether the dock stays on screen instead of auto-hiding.
-    pub fn stays_visible(&self) -> bool {
-        !self.state.borrow().autohide
-    }
-
-    /// The room a dock that stays visible keeps at the bottom of the primary
-    /// screen, in DIPs: its height and the margins above and below it.
-    pub fn reserved_height(&self) -> f32 {
-        let s = self.state.borrow();
-        let scale = logic::layout_scale(s.app_icon_size);
-        logic::height(scale) + 2.0 * logic::margin(scale)
-    }
-
     /// Hides the dock until `show`, such as while the launcher is open.
     pub fn hide(&mut self) {
         let mut s = self.state.borrow_mut();
@@ -1321,7 +1303,6 @@ impl State {
                 return;
             }
             // Leave Explorer's visible taskbar and its system controls uncovered.
-            // A hidden taskbar's work area may include our own reserved dock space.
             let area = if self.taskbar_hidden {
                 info.rcMonitor
             } else {

@@ -54,3 +54,7 @@ A small power icon sits to the right of the clock. It opens a menu for Lock comp
 Click the volume icon to open a slim vertical popup matching the dock's colors and rounded corners. It shows a percentage, vertical slider and speaker icon for mute/unmute. Drag up to increase volume and down to decrease it, or use the arrow keys for 1% steps and Page Up/Down for 10%. Home/End select 0/100. Click the speaker icon to mute/unmute, or press M. Tab switches between the slider and mute button; Space/Enter activates the focused mute button. Escape or a click outside closes the popup. The popup follows changes from media keys and other apps. Scrolling over dock volume and right-clicking it for Sound Settings still work. Moving the slider unmutes, as in Wisp's existing volume commands.
 
 The popup uses Win32 and the existing software Direct2D renderer; no new UI framework or dependency was added. The `dock-controls` capture checks rendering, keyboard focus selection and Escape without changing volume or executing a power command. Actual shutdown, restart and locking are deliberately left for your own use.
+
+## Always-visible overlay
+
+**Keep the dock visible** keeps Doggo floating above normal and maximized windows on the primary screen. It does not reserve an app-bar strip or shrink the usable work area. Maximized windows can extend behind the dock. Turning the setting off retains bottom-edge autohide. The native Windows taskbar still keeps its own area when it is shown; fullscreen suppression is unchanged.

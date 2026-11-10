@@ -66,3 +66,9 @@ The workspace suite passes 148 tests (114 launcher, 34 settings), with one exist
 Volume now uses a 64-by-232-DIP panel with the dock's colors and 8-DIP corners. The title and wide text button were removed. A percentage sits above a vertical track; a speaker icon below toggles mute. Dragging upward increases volume and downward decreases it. Keyboard controls and dismissal behavior are retained.
 
 The vertical input mapping and clamping tests pass; all 148 workspace tests pass with one existing ignored test. Both Clippy configurations and formatting checks pass. Optimized bottom and center dock-controls captures verify the actual client dimensions, native rendering, Tab focus and Escape dismissal. They do not change audio or invoke power actions. Pointer interaction and appearance at other physical display scales remain manual checks.
+
+## Always-visible dock overlay
+
+Keep dock visible now leaves the dock floating above normal windows without registering a reserved appbar strip. The installed release passed the native overlay assertion: its visible dock rectangle (333,655)-(947,711) sits inside the unchanged monitor work area (0,0)-(1280,720). Toggling this setting did not change the work area. The original autohide preference was restored afterward.
+
+All 148 workspace tests pass (one existing ignored), formatting and both Clippy configurations pass, and both release executables build successfully. The native check measures window/work-area geometry; visual interaction with maximized windows, fullscreen apps and multiple physical monitors remains a manual check.

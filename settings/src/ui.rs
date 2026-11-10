@@ -732,7 +732,7 @@ impl Settings {
                     .child(divider(p))
                     .child(row(
                         "Keep the dock visible",
-                        "Show the dock all the time on the main screen instead of when the pointer touches the bottom edge. While the taskbar is hidden, windows stop above the dock.",
+                        "Keep the dock floating over open windows on the main screen. Windows can extend behind it.",
                         Switch::new("dock-visible")
                             .checked(!self.config.dock_autohide)
                             .disabled(!self.config.dock)

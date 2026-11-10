@@ -21,7 +21,6 @@ use windows::core::{HSTRING, PCWSTR, Result, w};
 
 use crate::commands::{self, Command, Commands};
 use crate::config::{Config, Position, Theme};
-use crate::dock::space::DockSpace;
 use crate::dock::{self, Dock};
 use crate::drag::{self, Payload};
 use crate::files::{FileResults, FileSearch};
@@ -295,7 +294,6 @@ pub fn run() -> Result<()> {
             commands_sent: 0,
             taskbar: None,
             taskbar_failures: 0,
-            dock_space: None,
             dock: None,
             morph: None,
             morphed: false,
@@ -471,7 +469,6 @@ struct Launcher {
     /// Failed attempts to hide or restore the taskbar since the config changed.
     taskbar_failures: u32,
     /// Room kept for a dock that stays visible.
-    dock_space: Option<DockSpace>,
     dock: Option<Dock>,
     morph: Option<Morph>,
     morphed: bool,
@@ -628,7 +625,6 @@ impl Launcher {
         }
         if !self.config.dock {
             self.dock = None;
-            self.sync_reserve();
             return;
         }
         if self.dock.is_none() {
@@ -653,40 +649,8 @@ impl Launcher {
             dock.set_tray(self.taskbar.as_ref().is_some_and(TaskbarHider::is_active));
             dock.set_autohide(self.config.dock_autohide);
         }
-        self.sync_reserve();
         if let Some(dock) = &mut self.dock {
             if self.visible { dock.hide() } else { dock.show() }
-        }
-    }
-
-    /// Keeps maximized windows above a dock that stays visible while the
-    /// taskbar is hidden. A shown taskbar keeps its own space.
-    fn sync_reserve(&mut self) {
-        let hidden = self.taskbar.as_ref().is_some_and(TaskbarHider::is_active);
-        let wanted = hidden && self.dock.as_ref().is_some_and(Dock::stays_visible);
-        let reserved_height = self
-            .dock
-            .as_ref()
-            .map_or(dock::DEFAULT_RESERVED_HEIGHT, Dock::reserved_height);
-        // Before the space exists, so a re-hide while Windows places it
-        // cannot take the bottom back.
-        if wanted && let Some(hider) = &mut self.taskbar {
-            hider.keep_bottom(true);
-        }
-        if !wanted {
-            self.dock_space = None;
-        } else if let Some(space) = &self.dock_space {
-            // The taskbar hider may have just changed the work area.
-            space.set_height(reserved_height);
-            space.check();
-        } else {
-            match DockSpace::new(reserved_height) {
-                Ok(space) => self.dock_space = Some(space),
-                Err(e) => eprintln!("could not keep space for the dock: {e}"),
-            }
-        }
-        if let Some(hider) = &mut self.taskbar {
-            hider.keep_bottom(self.dock_space.is_some());
         }
     }
 
@@ -781,9 +745,6 @@ impl Launcher {
                 Err(e) => self.taskbar_failed(&e),
             }
         }
-        // Explorer restarting or the hider reclaiming space can take the
-        // dock's space away.
-        self.sync_reserve();
         // Re-hide and reclaim space first, since those operations can change
         // Explorer's z-order. Don't wait for the tray host's periodic check.
         if msg == taskbar::WM_TASKBAR_SHOW
@@ -2286,12 +2247,6 @@ impl Launcher {
         self.dock = None;
         if let Err(e) = TaskbarHider::configure(&mut self.taskbar, self.hwnd, false) {
             eprintln!("could not restore the taskbar: {e}");
-        }
-        // Removed last, so Windows works the work area out again from the
-        // restored taskbar and the remaining app bars. Waits, so the space
-        // is back before Wisp exits.
-        if let Some(space) = self.dock_space.take() {
-            space.close();
         }
         unsafe {
             let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_ID);

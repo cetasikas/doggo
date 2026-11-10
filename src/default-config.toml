@@ -41,8 +41,7 @@ hide_taskbar = true
 dock = true
 
 # Hide the dock until the pointer touches the bottom edge of a screen. With
-# false, the dock stays on the main screen and windows stop above it while the
-# taskbar is hidden.
+# false, the dock stays on the main screen as an overlay; windows extend behind it.
 dock_autohide = true
 # App window list shown when hovering a running app icon:
 # "multiple" (only when the app has multiple windows), "always", or "off".
