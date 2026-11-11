@@ -20,6 +20,7 @@ mod launch;
 mod morph;
 mod render;
 mod search;
+mod startup;
 mod surface;
 mod system;
 mod taskbar;

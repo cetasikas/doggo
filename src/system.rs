@@ -7,10 +7,7 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::System::Registry::*;
-use windows::core::{Error, PCWSTR, Result, w};
-
-const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-const RUN_VALUE: PCWSTR = crate::channel::RUN_VALUE;
+use windows::core::{Error, Result, w};
 
 pub fn set_clipboard(hwnd: HWND, text: &str) -> Result<()> {
     let data: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
@@ -61,29 +58,17 @@ pub fn get_clipboard(hwnd: HWND) -> Option<String> {
 }
 
 pub fn autostart_enabled() -> bool {
-    unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE, RRF_RT_REG_SZ, None, None, None).is_ok() }
+    crate::startup::enabled()
 }
 
 pub fn set_autostart(enabled: bool) -> Result<()> {
-    unsafe {
-        if enabled {
-            let exe = std::env::current_exe().map_err(|e| Error::new(windows::core::HRESULT(-1), e.to_string()))?;
-            let scoop = std::env::var_os("SCOOP").map(std::path::PathBuf::from);
-            let exe = crate::install::autostart_path(&exe, scoop.as_deref());
-            let command: Vec<u16> = format!("\"{}\"", exe.display()).encode_utf16().chain(Some(0)).collect();
-            RegSetKeyValueW(
-                HKEY_CURRENT_USER,
-                RUN_KEY,
-                RUN_VALUE,
-                REG_SZ.0,
-                Some(command.as_ptr().cast()),
-                (command.len() * 2) as u32,
-            )
-            .ok()
-        } else {
-            RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE).ok()
-        }
+    if !enabled {
+        return crate::startup::set(None);
     }
+    let exe = std::env::current_exe().map_err(|e| Error::new(windows::Win32::Foundation::E_FAIL, e.to_string()))?;
+    let scoop = std::env::var_os("SCOOP").map(std::path::PathBuf::from);
+    let exe = crate::install::autostart_path(&exe, scoop.as_deref());
+    crate::startup::set(Some(&exe))
 }
 
 pub fn system_uses_light_theme() -> bool {

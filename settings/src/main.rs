@@ -13,6 +13,8 @@ mod hotkey;
 #[path = "../../src/install.rs"]
 mod install;
 mod palette;
+#[path = "../../src/startup.rs"]
+mod startup;
 mod system;
 mod ui;
 mod update;

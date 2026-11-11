@@ -31,6 +31,8 @@ mod morph;
 mod render;
 #[path = "../src/search.rs"]
 mod search;
+#[path = "../src/startup.rs"]
+mod startup;
 #[path = "../src/surface/mod.rs"]
 mod surface;
 #[path = "../src/system.rs"]

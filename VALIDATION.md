@@ -72,3 +72,9 @@ The vertical input mapping and clamping tests pass; all 148 workspace tests pass
 Keep dock visible now leaves the dock floating above normal windows without registering a reserved appbar strip. The installed release passed the native overlay assertion: its visible dock rectangle (333,655)-(947,711) sits inside the unchanged monitor work area (0,0)-(1280,720). Toggling this setting did not change the work area. The original autohide preference was restored afterward.
 
 All 148 workspace tests pass (one existing ignored), formatting and both Clippy configurations pass, and both release executables build successfully. The native check measures window/work-area geometry; visual interaction with maximized windows, fullscreen apps and multiple physical monitors remains a manual check.
+
+## Sign-in launch and packaged app pins
+
+The Doggo sign-in task targets the portable launcher with no trigger delay and runs under the current user's interactive token, including on battery power. Manually starting the task through Task Scheduler opened the dock and hid the native taskbar. The task was run twice. The live pin file retained all three entries and kept the repaired stable app ID across the second launch. The test did not sign out or measure the first Explorer frame during Windows sign-in.
+
+All 149 workspace tests passed, with one existing ignored test. The packaged pin regression test covers an unambiguous match, ambiguous packages and ordinary desktop paths.

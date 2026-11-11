@@ -8,7 +8,7 @@ Run `dist\Doggo\doggo.exe` after building, with `doggo-settings.exe` beside it. 
 
 Open Settings from the notification icon. **Windows key dock** is optional and defaults off; the configured shortcut defaults to Alt+Space. Settings apply live. The saved `windows_key_search` key remains compatible with earlier Doggo builds.
 
-Doggo uses `%APPDATA%\doggo` for config, history, surfaces and `dock-pins.toml`. Its instance mutex, window class and **Doggo** startup value are separate from Wisp. Enable **Start with Windows** only if desired; building and extracting the app do not enable it. Upstream binary updates are disabled so they cannot replace the fork.
+Doggo uses `%APPDATA%\doggo` for config, history, surfaces and `dock-pins.toml`. Its instance mutex, window class and **Doggo** sign-in task are separate from Wisp. Enable **Start with Windows** only if desired; building and extracting the app do not enable it. Upstream binary updates are disabled so they cannot replace the fork.
 
 ## What changed
 

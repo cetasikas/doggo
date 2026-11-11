@@ -57,8 +57,8 @@ const PEEK_TIMER: usize = 3;
 /// Tries again to hide the taskbar after a failure. At sign-in Explorer may
 /// not have finished creating it.
 const TASKBAR_TIMER: usize = 4;
-const TASKBAR_RETRY_MS: u32 = 2000;
-const TASKBAR_ATTEMPTS: u32 = 5;
+const TASKBAR_RETRY_MS: u32 = 250;
+const TASKBAR_ATTEMPTS: u32 = 40;
 /// File results shown after apps, and for a query that starts with `?`.
 const MIXED_FILE_RESULTS: usize = 5;
 const ONLY_FILE_RESULTS: usize = 30;
@@ -153,6 +153,9 @@ pub fn run() -> Result<()> {
         // The mutex limits Wisp to one running instance.
         let _mutex = CreateMutexW(None, true, crate::channel::INSTANCE_MUTEX)?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
+            if flag("--startup") {
+                return Ok(());
+            }
             // Wait up to 3 s for a starting instance to create its window.
             for _ in 0..30 {
                 if let Ok(existing) = FindWindowW(CLASS_NAME, PCWSTR::null()) {
@@ -303,6 +306,11 @@ pub fn run() -> Result<()> {
         LAUNCHER.with(|cell| *cell.borrow_mut() = Some(launcher));
         with_launcher(|l| {
             l.start();
+            if flag("--startup")
+                && let Some(dock) = &mut l.dock
+            {
+                dock.show_at_login();
+            }
             if crate::util::perf::hook_on("WISP_CAPTURE") {
                 if !matches!(
                     crate::util::perf::hook("WISP_CAPTURE_SCENARIO").as_deref(),
@@ -720,7 +728,7 @@ impl Launcher {
         }
     }
 
-    /// Retries quietly every 2 seconds. Only the last failure is reported, by
+    /// Retries quietly while Explorer starts. Only the last failure is reported, by
     /// which time the tray icon exists to show the notification.
     fn taskbar_failed(&mut self, error: &windows::core::Error) {
         eprintln!("could not change the taskbar: {error}");
@@ -2840,7 +2848,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_launcher(|l| {
                 tray::add(l.hwnd, l.tray_icon, &l.tooltip());
                 // The new Explorer shows its taskbar again.
-                l.on_taskbar_message(m);
+                if l.config.hide_taskbar && l.taskbar.is_none() {
+                    l.sync_taskbar();
+                } else {
+                    l.on_taskbar_message(m);
+                }
             });
         }
         _ => {}

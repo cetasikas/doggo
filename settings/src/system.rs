@@ -4,15 +4,12 @@ use std::path::{Path, PathBuf};
 
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, LPARAM, WPARAM},
-        System::{Diagnostics::ToolHelp::*, Registry::*},
+        Foundation::{CloseHandle, LPARAM, WPARAM},
+        System::Diagnostics::ToolHelp::*,
         UI::{Shell::ShellExecuteW, WindowsAndMessaging::*},
     },
     core::{PCWSTR, w},
 };
-
-const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-const RUN_VALUE: PCWSTR = crate::channel::RUN_VALUE;
 
 fn wide(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
@@ -20,47 +17,28 @@ fn wide(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
 }
 
 pub fn autostart_enabled() -> bool {
-    unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE, RRF_RT_REG_SZ, None, None, None).is_ok() }
+    crate::startup::enabled()
 }
 
 pub fn set_autostart(enabled: bool) -> Result<(), String> {
-    unsafe {
-        if enabled {
-            let settings_exe = std::env::current_exe().map_err(|error| error.to_string())?;
-            let launcher = launcher_path(&settings_exe)?;
-            let scoop = std::env::var_os("SCOOP").map(PathBuf::from);
-            let launcher = crate::install::autostart_path(&launcher, scoop.as_deref());
-            if !launcher.is_file() {
-                return Err("Place doggo.exe next to doggo-settings.exe, then try again.".into());
-            }
-            let command = wide(format!("\"{}\"", launcher.display()));
-            RegSetKeyValueW(
-                HKEY_CURRENT_USER,
-                RUN_KEY,
-                RUN_VALUE,
-                REG_SZ.0,
-                Some(command.as_ptr().cast()),
-                (command.len() * 2) as u32,
-            )
-            .ok()
-            .map_err(|error| format!("Cannot start Wisp with Windows: {error}"))
-        } else {
-            let status = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE);
-            if status == ERROR_FILE_NOT_FOUND {
-                return Ok(());
-            }
-            status
-                .ok()
-                .map_err(|error| format!("Cannot turn off Start with Windows: {error}"))
-        }
+    if !enabled {
+        return crate::startup::set(None).map_err(|error| error.message());
     }
+    let settings_exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let launcher = launcher_path(&settings_exe)?;
+    let scoop = std::env::var_os("SCOOP").map(PathBuf::from);
+    let launcher = crate::install::autostart_path(&launcher, scoop.as_deref());
+    if !launcher.is_file() {
+        return Err("Place doggo.exe next to doggo-settings.exe, then try again.".into());
+    }
+    crate::startup::set(Some(&launcher)).map_err(|error| format!("Cannot start Doggo with Windows: {error}"))
 }
 
 fn launcher_path(settings_exe: &Path) -> Result<PathBuf, String> {
     settings_exe
         .parent()
         .map(|parent| parent.join("doggo.exe"))
-        .ok_or_else(|| "Cannot find the Wisp folder.".into())
+        .ok_or_else(|| "Cannot find the Doggo folder.".into())
 }
 
 /// Colors the Windows title bar of this app's window to match the page.

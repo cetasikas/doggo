@@ -2,6 +2,11 @@
 
 User-facing changes in each release. Each release on GitHub lists these notes and its pull requests.
 
+## Doggo personal fork - 2026-11-11
+
+- Start with Windows now launches Doggo through a sign-in task with no added delay. Doggo shows the dock at sign-in and retries sooner if Explorer is still starting.
+- Save packaged app pins by their stable Windows app ID and repair old version-specific pins when the app can be identified.
+
 ## Doggo personal fork - 2026-11-10
 
 - Keep dock visible now uses a floating overlay. Maximized windows extend behind it instead of losing a strip of screen space.

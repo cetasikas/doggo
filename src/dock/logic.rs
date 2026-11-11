@@ -332,6 +332,56 @@ fn normalize(path: &str) -> String {
         .to_lowercase()
 }
 
+/// Finds the stable AppsFolder entry for an old pin saved as a WindowsApps path.
+/// A package can expose several apps. Only repair an unambiguous match.
+pub fn resolve_packaged_pin<'a>(apps: &'a [AppEntry], exe: &str) -> Option<&'a AppEntry> {
+    let package = std::path::Path::new(exe).ancestors().find(|path| {
+        path.parent()
+            .and_then(std::path::Path::file_name)
+            .is_some_and(|name| name.eq_ignore_ascii_case("WindowsApps"))
+    })?;
+    let full_name = package.file_name()?.to_str()?;
+    let mut parts = full_name.rsplitn(5, '_');
+    let publisher = parts.next()?;
+    let _resource = parts.next()?;
+    let _architecture = parts.next()?;
+    let version = parts.next()?;
+    let name = parts.next()?;
+    if version.split('.').count() != 4 || !version.split('.').all(|part| part.parse::<u16>().is_ok()) {
+        return None;
+    }
+    let family = format!("{name}_{publisher}");
+    let mut matches = apps.iter().filter(|app| {
+        app.id
+            .split_once('!')
+            .is_some_and(|(id_family, _)| id_family.eq_ignore_ascii_case(&family))
+    });
+    let app = matches.next()?;
+    matches.next().is_none().then_some(app)
+}
+
+#[cfg(test)]
+#[test]
+fn repairs_old_package_paths_only_for_a_unique_app_in_that_family() {
+    let app = |id: &str| AppEntry {
+        id: id.into(),
+        name: id.into(),
+        path: None,
+    };
+    let old_path = r"C:\Program Files\WindowsApps\Example.Editor_1.2.3.4_x64__publisher\app\editor.exe";
+    let entries = [app("Example.Editor_publisher!Main"), app("Other.Editor_publisher!Main")];
+    assert_eq!(
+        resolve_packaged_pin(&entries, old_path).map(|entry| entry.id.as_str()),
+        Some("Example.Editor_publisher!Main")
+    );
+    let ambiguous = [
+        app("Example.Editor_publisher!Main"),
+        app("Example.Editor_publisher!Viewer"),
+    ];
+    assert!(resolve_packaged_pin(&ambiguous, old_path).is_none());
+    assert!(resolve_packaged_pin(&entries, r"C:\Tools\editor.exe").is_none());
+}
+
 /// Paths must match completely: unrelated programs often share a filename.
 pub fn match_app<'a>(apps: &'a [AppEntry], exe: &str, aumid: Option<&str>) -> Option<&'a AppEntry> {
     if let Some(id) = aumid.filter(|s| !s.is_empty())

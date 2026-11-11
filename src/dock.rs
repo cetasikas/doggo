@@ -556,6 +556,21 @@ impl Dock {
     pub fn set_apps(&mut self, apps: &[AppEntry], icons: &HashMap<String, Arc<IconPixels>>) {
         let mut s = self.state.borrow_mut();
         s.apps = apps.to_vec();
+        let mut repaired = false;
+        for pin in &mut s.pinned {
+            if let Some(path) = &pin.path
+                && let Some(app) = logic::resolve_packaged_pin(apps, path)
+            {
+                pin.id.clone_from(&app.id);
+                pin.path = None;
+                repaired = true;
+            }
+        }
+        if repaired {
+            let mut seen = std::collections::HashSet::new();
+            s.pinned.retain(|pin| seen.insert(pin.id.to_ascii_lowercase()));
+            s.save_pins();
+        }
         for (id, pixels) in icons {
             s.icons.entry(id.clone()).or_insert_with(|| pixels.clone());
         }
@@ -640,6 +655,14 @@ impl Dock {
         s.surface_rect = None;
         s.stop_slide();
         s.start_poll(POLL_MS);
+        s.refresh();
+    }
+
+    /// Show the dock at sign-in without taking keyboard focus.
+    pub fn show_at_login(&mut self) {
+        let mut s = self.state.borrow_mut();
+        s.revealed = true;
+        s.away = 0;
         s.refresh();
     }
 
@@ -866,7 +889,9 @@ impl State {
         let windows = open_windows::list();
         let mut items: Vec<Item> = Vec::new();
         for window in windows {
-            let aumid = window_aumid(HWND(window.hwnd as _));
+            let hwnd = HWND(window.hwnd as _);
+            let packaged_id = process_app_id(hwnd);
+            let aumid = packaged_id.clone().or_else(|| window_aumid(hwnd));
             let app = logic::match_app(&self.pinned, &window.exe, aumid.as_deref())
                 .or_else(|| logic::match_app(&self.apps, &window.exe, aumid.as_deref()))
                 .cloned()
@@ -875,7 +900,7 @@ impl State {
                     AppEntry {
                         name: open_windows::program_name(&window.exe).into(),
                         id,
-                        path: (!window.exe.is_empty()).then(|| window.exe.clone()),
+                        path: (packaged_id.is_none() && !window.exe.is_empty()).then(|| window.exe.clone()),
                     }
                 });
             if app.id.is_empty() {
@@ -2274,6 +2299,27 @@ fn load_pins() -> Vec<AppEntry> {
             path: pin.path,
         })
         .collect()
+}
+
+fn process_app_id(hwnd: HWND) -> Option<String> {
+    use windows::Win32::{
+        Foundation::CloseHandle,
+        Storage::Packaging::Appx::GetApplicationUserModelId,
+        System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    unsafe {
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        // Application User Model IDs are limited to 128 characters.
+        let mut buffer = [0u16; 129];
+        let mut len = buffer.len() as u32;
+        let result = GetApplicationUserModelId(process, &mut len, Some(windows::core::PWSTR(buffer.as_mut_ptr())));
+        let _ = CloseHandle(process);
+        result.ok().ok()?;
+        let id = String::from_utf16_lossy(&buffer[..len.saturating_sub(1) as usize]);
+        (!id.is_empty()).then_some(id)
+    }
 }
 
 fn window_aumid(hwnd: HWND) -> Option<String> {
