@@ -973,6 +973,9 @@ impl Launcher {
         }
         let opacity = self.morph_opacity();
         self.visible = false;
+        if let Some(desk) = &mut self.desk {
+            desk.ensure_wallpaper_layer();
+        }
         if self.morphed && self.unified() && !self.taskbar.as_ref().is_some_and(TaskbarHider::is_peeking) {
             let to = self.dock.as_ref().unwrap().resting_rect();
             self.begin_morph(self.outline.unwrap_or_else(|| self.current_rect()), to, false, opacity);

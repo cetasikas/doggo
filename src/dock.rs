@@ -1517,7 +1517,15 @@ impl State {
         let stale = match self.tip_target {
             Some(tray::Tip::Inline(i)) => i >= self.inline.len(),
             Some(tray::Tip::Flyout(i)) => i >= self.tray.len(),
-            Some(tray::Tip::Chevron | tray::Tip::Power | tray::Tip::ShowDesktop | tray::Tip::Volume) => false,
+            Some(tray::Tip::App(slot)) => self.item_at(slot).is_none(),
+            Some(
+                tray::Tip::Chevron
+                | tray::Tip::Power
+                | tray::Tip::ShowDesktop
+                | tray::Tip::Volume
+                | tray::Tip::Battery
+                | tray::Tip::Search,
+            ) => false,
             // The desktop pill has nothing to do with the tray.
             None => false,
         };
@@ -1704,7 +1712,9 @@ impl State {
         self.hide_windows();
         self.windows_slot = slot;
         if slot.is_some() {
-            self.hide_tip();
+            if self.tip_target != slot.map(tray::Tip::App) {
+                self.hide_tip();
+            }
             unsafe {
                 let _ = SetTimer(Some(self.hwnd), WINDOWS_TIMER, if shown { 0 } else { TIP_MS }, None);
             }
@@ -1839,7 +1849,10 @@ impl State {
         let x = ((anchor.left + anchor.right - width) / 2)
             .min(info.rcWork.right - gap - width)
             .max(info.rcWork.left + gap);
-        self.hide_tip();
+        let keep_app_tip = self.tip_target == Some(tray::Tip::App(slot));
+        if !keep_app_tip {
+            self.hide_tip();
+        }
         self.windows_hover = self.windows_hover.filter(|&row| row < targets.len());
         self.windows_rows = rows;
         self.windows_targets = targets;
@@ -1854,6 +1867,9 @@ impl State {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
             let _ = InvalidateRect(Some(self.windows), None, false);
+        }
+        if keep_app_tip {
+            self.show_tip();
         }
     }
 
@@ -1882,12 +1898,30 @@ impl State {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIP_TIMER);
         }
-        let (text, anchor) = match self.tip_target {
+        let (text, mut anchor) = match self.tip_target {
             Some(tray::Tip::Power) => (
                 "Power: lock, restart or shut down".to_string(),
                 self.part_rect(logic::Part::Power),
             ),
             Some(tray::Tip::Volume) => ("Volume controls".to_string(), self.part_rect(logic::Part::Volume)),
+            Some(tray::Tip::Battery) => {
+                let text = self.status.battery.map_or_else(
+                    || "Battery".to_string(),
+                    |battery| {
+                        format!(
+                            "Battery: {}%{}",
+                            battery.percent,
+                            if battery.charging { " · Charging" } else { "" }
+                        )
+                    },
+                );
+                (text, self.part_rect(logic::Part::Battery))
+            }
+            Some(tray::Tip::Search) => ("Search".to_string(), Some(self.item_rect(0))),
+            Some(tray::Tip::App(slot)) => (
+                self.item_at(slot).map(|item| item.app.name.clone()).unwrap_or_default(),
+                Some(self.item_rect(slot)),
+            ),
             Some(tray::Tip::ShowDesktop) => ("Show desktop".to_string(), self.part_rect(logic::Part::ShowDesktop)),
             Some(tray::Tip::Chevron) => (
                 if self.tray_host.is_some() && !self.tray.is_empty() {
@@ -1911,6 +1945,18 @@ impl State {
             ),
             None => return,
         };
+        if let Some(tray::Tip::App(slot)) = self.tip_target
+            && self.windows_slot == Some(slot)
+            && unsafe { IsWindowVisible(self.windows) }.as_bool()
+        {
+            let mut windows = RECT::default();
+            if unsafe { GetWindowRect(self.windows, &mut windows) }.is_ok() {
+                if let Some(anchor) = &mut anchor {
+                    anchor.top = windows.top;
+                    anchor.bottom = windows.top;
+                }
+            }
+        }
         let text = text.trim().to_string();
         let Some(anchor) = anchor.filter(|_| !text.is_empty()) else {
             return;
@@ -2669,8 +2715,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         Some(logic::Part::Power) => Some(tray::Tip::Power),
                         Some(logic::Part::ShowDesktop) => Some(tray::Tip::ShowDesktop),
                         Some(logic::Part::Volume) => Some(tray::Tip::Volume),
+                        Some(logic::Part::Battery) => Some(tray::Tip::Battery),
                         Some(logic::Part::Chevron) => Some(tray::Tip::Chevron),
                         Some(logic::Part::Tray(i)) => Some(tray::Tip::Inline(i)),
+                        None => hover.map(|slot| {
+                            if slot == 0 {
+                                tray::Tip::Search
+                            } else {
+                                tray::Tip::App(slot)
+                            }
+                        }),
                         _ => None,
                     });
                     s.hover_windows(if hover_part.is_none() { hover } else { None });

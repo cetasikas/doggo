@@ -1,5 +1,9 @@
 # Doggo validation - November 10, 2026
 
+## Incremental release - November 13, 2026 (dock tooltips and fence layer)
+
+The `dist\Doggo` package was rebuilt with native hover labels for Search, battery charge level and dock app names. The desktop fence layer is restored when the launcher closes and checked every 100 ms to reduce brief disappearance when returning to the desktop. `cargo fmt --all` and `cargo build --release --workspace --features nightly --locked` completed. No automated or interactive UI tests were run; manually check the hover labels and click from search to the desktop with fences enabled.
+
 ## Incremental release - November 13, 2026 (tab commit and transparency refresh)
 
 The separate `Doggo-20261113-TabRefreshFix` portable build applies fence transparency changes to the render-time layout immediately. Clicking elsewhere in a fence commits the current inline tab rename before that click is handled. `cargo fmt --all` and `cargo build --release --workspace --features nightly --locked` completed. No automated or interactive UI tests were run for this incremental fix; verify click-away rename persistence and immediate transparency changes manually.

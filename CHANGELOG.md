@@ -4,6 +4,7 @@ User-facing changes in each release. Each release on GitHub lists these notes an
 
 ## Doggo personal fork - 2026-11-13
 
+- Restore desktop fences immediately after launcher focus changes to reduce visible shell-layer flicker. Add hover labels for Search, battery level and charging state, and dock app names.
 - Commit an in-place tab rename when clicking anywhere else in its container, and apply fence transparency changes immediately.
 - Align the in-place tab editor with its rendered label and commit edits immediately when the editor loses focus.
 - Edit tab names in place after clicking **+**, and on double-click to rename. Move new, rename and remove tab actions to the main fence context menu; protect the **Main** tab from removal and restore it in existing layouts where it was deleted.

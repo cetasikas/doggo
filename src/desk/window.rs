@@ -1752,7 +1752,9 @@ impl DeskWindow {
             place_on_wallpaper(hwnd);
             // Explorer can raise its desktop or show its icons again after a
             // refresh; check a few times a second and repair both.
-            let _ = SetTimer(Some(hwnd), HEAL_TIMER, 500, None);
+            // Explorer can raise its desktop when it gets focus. Repair this
+            // quickly enough that fences don't visibly vanish on a desktop click.
+            let _ = SetTimer(Some(hwnd), HEAL_TIMER, 100, None);
             // Paint once before hiding Explorer's icons, so the desk appears
             // in the same place the icons disappeared from.
             let _ = UpdateWindow(hwnd);
@@ -1812,6 +1814,22 @@ impl DeskWindow {
             // the wallpaper layer before repainting.
             place_on_wallpaper(s.hwnd);
             s.rescan();
+        }
+    }
+
+    /// Restores the fence layer after another app or Explorer takes focus.
+    pub fn ensure_wallpaper_layer(&mut self) {
+        if let Ok(s) = self.state.try_borrow() {
+            unsafe {
+                if !IsWindowVisible(s.hwnd).as_bool() {
+                    let _ = ShowWindow(s.hwnd, SW_SHOWNOACTIVATE);
+                    let _ = InvalidateRect(Some(s.hwnd), None, false);
+                }
+            }
+            if !above_shell(s.hwnd) {
+                place_on_wallpaper(s.hwnd);
+                s.invalidate();
+            }
         }
     }
 
