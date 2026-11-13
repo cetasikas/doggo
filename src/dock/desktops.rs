@@ -6,7 +6,7 @@
 
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_SZ, RegGetValueW};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
+    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_D,
     VK_LCONTROL, VK_LEFT, VK_LWIN, VK_RIGHT,
 };
 use windows::core::{HSTRING, PCWSTR, w};
@@ -103,6 +103,36 @@ pub fn switch(right: bool) {
     // Fails when an elevated window has the focus; Windows blocks the keys then.
     if unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) } != inputs.len() as u32 {
         eprintln!("Dock desktops: {}", windows::core::Error::from_thread());
+    }
+}
+
+/// Uses the Windows Show desktop shortcut, which toggles back to the prior
+/// window arrangement when pressed again.
+pub fn show_desktop() {
+    let key = |vk: VIRTUAL_KEY, up: bool| {
+        let mut flags = if up { KEYEVENTF_KEYUP } else { Default::default() };
+        if vk == VK_LWIN {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    dwFlags: flags,
+                    ..Default::default()
+                },
+            },
+        }
+    };
+    let inputs = [
+        key(VK_LWIN, false),
+        key(VK_D, false),
+        key(VK_D, true),
+        key(VK_LWIN, true),
+    ];
+    if unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) } != inputs.len() as u32 {
+        eprintln!("Dock show desktop: {}", windows::core::Error::from_thread());
     }
 }
 

@@ -19,8 +19,11 @@ pub fn can_morph(visible: bool, hidden_fraction: f32) -> bool {
     visible && hidden_fraction <= 0.4
 }
 
+/// The window outline: the dock's radius when collapsed, the launcher's when
+/// fully expanded. Matching the dock shell keeps the shared surface's corners
+/// from peeking past the dock's rim in a light theme.
 pub fn radius(expanded: f32) -> f32 {
-    8.0 + 4.0 * expanded.clamp(0.0, 1.0)
+    13.0 - expanded.clamp(0.0, 1.0)
 }
 
 pub fn bounds(from: RECT, to: RECT, progress: f32) -> RECT {

@@ -21,6 +21,8 @@ use windows::core::{HSTRING, PCWSTR, Result, w};
 
 use crate::commands::{self, Command, Commands};
 use crate::config::{Config, Position, Theme};
+use crate::desk::Desk;
+use crate::desk::window::DeskWindow;
 use crate::dock::{self, Dock};
 use crate::drag::{self, Payload};
 use crate::files::{FileResults, FileSearch};
@@ -298,6 +300,7 @@ pub fn run() -> Result<()> {
             taskbar: None,
             taskbar_failures: 0,
             dock: None,
+            desk: None,
             morph: None,
             morphed: false,
             outline: None,
@@ -478,6 +481,8 @@ struct Launcher {
     taskbar_failures: u32,
     /// Room kept for a dock that stays visible.
     dock: Option<Dock>,
+    /// Fences drawn on the desktop, when the user turned the desk on.
+    desk: Option<DeskWindow>,
     morph: Option<Morph>,
     morphed: bool,
     outline: Option<RECT>,
@@ -522,6 +527,9 @@ impl Launcher {
     fn start(&mut self) {
         self.sync_shell();
         self.apply_theme();
+        // Repair the desktop if a previous run could not restore its icons.
+        crate::desk::native::restore();
+        self.sync_desk();
         self.set_collapsed_style(true);
         if self.unified() {
             self.paint();
@@ -621,6 +629,38 @@ impl Launcher {
         self.reload_config_if_changed();
         if let Some(dock) = &mut self.dock {
             dock.reload_pins();
+        }
+        self.sync_desk();
+    }
+
+    fn is_dark(&self) -> bool {
+        match self.config.theme {
+            Theme::Dark => true,
+            Theme::Light => false,
+            Theme::System => !system::system_uses_light_theme(),
+        }
+    }
+
+    /// Creates, updates or removes the desk to match `desk.toml`. The desk is
+    /// off by default and only takes over the desktop when the file says so.
+    fn sync_desk(&mut self) {
+        let (desk, error) = Desk::load();
+        if let Some(error) = error {
+            tray::notify(self.hwnd, "Doggo desk", &error, true);
+        }
+        if !desk.enabled {
+            self.desk = None;
+            return;
+        }
+        let (dark, backdrop) = (self.is_dark(), self.config.backdrop);
+        if let Some(window) = &mut self.desk {
+            window.set_config(desk);
+            window.apply_theme(dark, backdrop);
+            return;
+        }
+        match DeskWindow::with_desk(self.hwnd, desk, dark, backdrop) {
+            Ok(window) => self.desk = Some(window),
+            Err(error) => tray::notify(self.hwnd, "Could not open the desk", &error.message(), true),
         }
     }
 
@@ -769,14 +809,13 @@ impl Launcher {
     }
 
     fn apply_theme(&mut self) {
-        let dark = match self.config.theme {
-            Theme::Dark => true,
-            Theme::Light => false,
-            Theme::System => !system::system_uses_light_theme(),
-        };
+        let dark = self.is_dark();
         self.palette = crate::theme::apply_backdrop(self.hwnd, dark, self.config.backdrop, self.unified());
         if let Some(dock) = &mut self.dock {
-            dock.apply_theme(Palette::new(dark, true), self.config.backdrop);
+            dock.apply_theme(dark, self.config.backdrop);
+        }
+        if let Some(desk) = &mut self.desk {
+            desk.apply_theme(dark, self.config.backdrop);
         }
         self.invalidate();
     }
@@ -1929,6 +1968,17 @@ impl Launcher {
         }
     }
 
+    /// Puts Explorer's desktop icons back and stops hiding them, so they stay
+    /// visible on the next reload and restart. Shared by the tray, the dock's
+    /// background menu and a fence's menu.
+    fn restore_desk_icons(&mut self) {
+        if let Some(desk) = &mut self.desk {
+            desk.show_icons();
+        } else {
+            crate::desk::native::restore();
+        }
+    }
+
     fn on_tray_command(&mut self, cmd: u32) {
         match cmd {
             tray::CMD_OPEN => self.show_keyboard_dock(),
@@ -1954,6 +2004,7 @@ impl Launcher {
                     tray::notify(self.hwnd, "Could not change Start with Windows", &e.message(), true);
                 }
             }
+            tray::CMD_DESK_ICONS => self.restore_desk_icons(),
             // Defer destruction until this handler releases the launcher borrow.
             // WM_DESTROY needs to borrow the launcher for shutdown.
             tray::CMD_QUIT => unsafe {
@@ -2253,6 +2304,7 @@ impl Launcher {
     fn shutdown(&mut self) {
         self.win_tap_hook = None;
         self.dock = None;
+        self.desk = None;
         if let Err(e) = TaskbarHider::configure(&mut self.taskbar, self.hwnd, false) {
             eprintln!("could not restore the taskbar: {e}");
         }
@@ -2764,6 +2816,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_launcher(|l| {
                 l.on_taskbar_message(msg);
                 l.apply_theme();
+                if let Some(desk) = &mut l.desk {
+                    desk.refresh();
+                }
             });
         }
         WM_DISPLAYCHANGE | taskbar::WM_TASKBAR_SHOW | taskbar::WM_RECOVERY_DONE => {
@@ -2778,6 +2833,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 {
                     dock.refresh();
                 }
+                if let Some(desk) = &mut l.desk {
+                    desk.refresh();
+                }
             });
         }
         dock::WM_SHOW_LAUNCHER => {
@@ -2791,24 +2849,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let Some(action) = dock_power_action(wparam.0) else {
                 return LRESULT(0);
             };
-            if action.needs_confirmation() {
-                let title = HSTRING::from(format!("{} this computer?", action.title()));
-                if unsafe {
-                    MessageBoxW(
-                        Some(hwnd),
-                        w!("Save your work before continuing."),
-                        &title,
-                        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
-                    )
-                } != IDYES
-                {
-                    return LRESULT(0);
-                }
-            }
             if let Err(error) = power::run(action) {
                 tray::notify(hwnd, "Power action failed", &error, true);
             }
             return LRESULT(0);
+        }
+        dock::WM_DOCK_DESK_ICONS => {
+            with_launcher(Launcher::restore_desk_icons);
         }
         WM_TIMER if wparam.0 == PEEK_TIMER => {
             with_launcher(Launcher::peek_tick);
@@ -2819,7 +2866,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             with_launcher(Launcher::sync_taskbar);
         }
-        WM_ENDSESSION if wparam.0 != 0 => taskbar::emergency_restore(),
+        WM_ENDSESSION if wparam.0 != 0 => {
+            taskbar::emergency_restore();
+            crate::desk::native::restore();
+        }
         tray::WM_TRAY => match loword(lparam.0 as usize) {
             WM_LBUTTONUP => {
                 with_launcher(Launcher::show);
@@ -2853,6 +2903,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 } else {
                     l.on_taskbar_message(m);
                 }
+                // Explorer restarted; the desk's region and icons are still
+                // valid, but its backdrop and trimmed state may have changed.
+                if let Some(desk) = &mut l.desk {
+                    desk.refresh();
+                }
             });
         }
         _ => {}
@@ -2865,14 +2920,11 @@ mod tests {
     use super::mouse_moved;
 
     #[test]
-    fn dock_power_menu_only_exposes_requested_actions_and_confirms_destructive_ones() {
+    fn dock_power_menu_only_exposes_requested_actions() {
         use crate::commands::power::Power;
         assert_eq!(super::dock_power_action(1), Some(Power::Lock));
-        assert!(!super::dock_power_action(1).unwrap().needs_confirmation());
         assert_eq!(super::dock_power_action(2), Some(Power::Restart));
-        assert!(super::dock_power_action(2).unwrap().needs_confirmation());
         assert_eq!(super::dock_power_action(3), Some(Power::ShutDown));
-        assert!(super::dock_power_action(3).unwrap().needs_confirmation());
         assert!(super::dock_power_action(0).is_none());
         assert!(super::dock_power_action(4).is_none());
     }

@@ -16,6 +16,7 @@ pub const CMD_SETTINGS: u32 = 3;
 pub const CMD_AUTOSTART: u32 = 4;
 pub const CMD_QUIT: u32 = 5;
 pub const CMD_CONFIG: u32 = 6;
+pub const CMD_DESK_ICONS: u32 = 7;
 
 fn data(hwnd: HWND) -> NOTIFYICONDATAW {
     NOTIFYICONDATAW {
@@ -75,6 +76,8 @@ pub fn show_menu(hwnd: HWND, hotkey: &str, autostart: bool) -> u32 {
         item(MF_STRING, CMD_RESCAN, "Rescan apps");
         item(MF_STRING, CMD_SETTINGS, "Settings");
         item(MF_STRING, CMD_CONFIG, "Edit config file");
+        // An escape hatch: always available, even if the desk hid the icons.
+        item(MF_STRING, CMD_DESK_ICONS, "Restore desktop icons");
         item(
             if autostart { MF_STRING | MF_CHECKED } else { MF_STRING },
             CMD_AUTOSTART,

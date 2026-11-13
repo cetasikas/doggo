@@ -1,5 +1,19 @@
 # Doggo validation - November 10, 2026
 
+## Incremental release - November 13, 2026 (tab commit and transparency refresh)
+
+The separate `Doggo-20261113-TabRefreshFix` portable build applies fence transparency changes to the render-time layout immediately. Clicking elsewhere in a fence commits the current inline tab rename before that click is handled. `cargo fmt --all` and `cargo build --release --workspace --features nightly --locked` completed. No automated or interactive UI tests were run for this incremental fix; verify click-away rename persistence and immediate transparency changes manually.
+
+## Incremental release - November 13, 2026
+
+The separate `Doggo-20261113-InlineTabsRefine` portable build aligns the in-place rename text with the tab label and commits on edit-control focus loss. It was compiled with `cargo build --release --workspace --features nightly --locked`; no interactive visual check was run.
+
+The separate `Doggo-20261113-InlineTabs` portable build edits tab names in place after creating with **+** and on double-click rename. New, rename and remove actions are on the main fence menu. The **Main** tab is protected and is restored when an older layout no longer contains it. The release was compiled with `cargo build --release --workspace --features nightly --locked`. No automated or interactive UI tests were run for this change; verify inline editing, focus changes, context-menu actions, and Main protection in the live app.
+
+## Incremental release - November 12, 2026
+
+The current `Doggo-20261112-TabsNoWeather` portable folder was built from this workspace with `cargo build --release --workspace --features nightly --locked`. It adds saved content tabs to each desktop fence and removes the weather widget, its Settings control and its client code. Existing fence layouts load into a `Main` tab; old saved weather fences are discarded. Automated tests and interactive desktop checks were not run for this incremental build. Please manually verify creating, switching, renaming and removing tabs, then restart Doggo to confirm each tab's contents persist. The release build completing confirms compilation only.
+
 Upstream base: `4d86a783cf4b9c73202e72398c01b68b54f12267`, verified against GitHub HEAD before implementation. Built with Rust 1.99.1 MSVC on this Windows machine. Development branch: `feat/doggo`. See the repository for publication status.
 
 ## Automated checks completed

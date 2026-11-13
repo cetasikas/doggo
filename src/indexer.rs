@@ -187,6 +187,21 @@ pub(crate) unsafe fn load_icon(item: &IShellItem, size: i32) -> Option<IconPixel
     }
 }
 
+pub(crate) unsafe fn load_thumbnail(item: &IShellItem, size: i32) -> Option<IconPixels> {
+    unsafe {
+        let factory: IShellItemImageFactory = item.cast().ok()?;
+        let bitmap = factory
+            .GetImage(
+                windows::Win32::Foundation::SIZE { cx: size, cy: size },
+                SIIGBF_THUMBNAILONLY | SIIGBF_RESIZETOFIT,
+            )
+            .ok()?;
+        let pixels = bitmap_pixels(bitmap);
+        let _ = DeleteObject(bitmap.into());
+        pixels
+    }
+}
+
 unsafe fn bitmap_pixels(bitmap: HBITMAP) -> Option<IconPixels> {
     unsafe {
         let mut info = BITMAP::default();

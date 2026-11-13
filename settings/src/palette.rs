@@ -1,4 +1,4 @@
-//! Pure black and paper white. Wisp's cyan marks only focus, selection and
+//! Pure black and paper white. Doggo's electric blue marks focus, selection and
 //! switches that are on.
 
 use gpui_kit::component::theme::Theme;
@@ -29,9 +29,9 @@ fn dark() -> Palette {
         border: rgb(0x232323).into(),
         fg: rgb(0xf5f5f5).into(),
         muted: rgb(0x8f8f8f).into(),
-        accent: rgb(0x22d3ee).into(),
-        accent_soft: rgba(0x22d3ee26).into(),
-        accent_fg: rgb(0x00242c).into(),
+        accent: rgb(0x54a5ff).into(),
+        accent_soft: rgba(0x54a5ff26).into(),
+        accent_fg: rgb(0x07172b).into(),
         warn: rgb(0xf2c94c).into(),
         danger: rgb(0xff6b6b).into(),
     }
@@ -45,8 +45,8 @@ fn light() -> Palette {
         border: rgb(0xe6e4de).into(),
         fg: rgb(0x111111).into(),
         muted: rgb(0x6b6a66).into(),
-        accent: rgb(0x0891b2).into(),
-        accent_soft: rgba(0x0891b21f).into(),
+        accent: rgb(0x245eae).into(),
+        accent_soft: rgba(0x245eae1f).into(),
         accent_fg: rgb(0xffffff).into(),
         warn: rgb(0x9a6700).into(),
         danger: rgb(0xc42b1c).into(),

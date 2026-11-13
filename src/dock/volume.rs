@@ -102,7 +102,7 @@ impl Popup {
             (info.rcWork.right - width - margin).max(info.rcWork.left + margin),
         );
         let y = (anchor.top - height - margin).max(info.rcWork.top + margin);
-        s.palette = theme::apply_backdrop(self.hwnd, dark, backdrop, true);
+        s.palette = theme::apply_dock_backdrop(self.hwnd, dark, backdrop, true);
         s.level = audio::level();
         s.dragging = false;
         s.mute_focus = false;

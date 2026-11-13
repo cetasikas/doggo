@@ -22,6 +22,7 @@ pub struct Shown {
 pub enum Tip {
     Chevron,
     Power,
+    ShowDesktop,
     Volume,
     /// An icon in the dock, by its inline position.
     Inline(usize),

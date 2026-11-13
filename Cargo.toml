@@ -22,6 +22,7 @@ perf-trace = ["windows/Win32_System_Performance"]
 [dependencies]
 nucleo-matcher = "0.3"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "1"
 windows-core = "0.62"
 windows-numerics = "0.3"
@@ -50,13 +51,16 @@ features = [
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
     "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_WiFi",
     "Win32_Networking_NetworkListManager",
+    "Win32_Networking_WinHttp",
     "Win32_Security",
     "Win32_Storage_Packaging_Appx",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Console",
     "Win32_System_Com_StructuredStorage",

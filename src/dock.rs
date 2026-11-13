@@ -54,6 +54,9 @@ const WM_TRAY_CHANGED: u32 = WM_APP + 22;
 /// dock lacks.
 pub const WM_DOCK_SHOW_TASKBAR: u32 = WM_APP + 23;
 pub const WM_DOCK_POWER: u32 = WM_APP + 28;
+/// Asks the app to put Explorer's desktop icons back, from a dock or fence
+/// menu. The same escape hatch as the tray item.
+pub const WM_DOCK_DESK_ICONS: u32 = WM_APP + 29;
 const WM_CLOSE_FLYOUT: u32 = WM_APP + 24;
 pub const WM_KEYBOARD_CHAR: u32 = WM_APP + 25;
 pub const WM_KEYBOARD_KEY: u32 = WM_APP + 26;
@@ -87,7 +90,7 @@ const HIDE_AFTER: u8 = 5;
 const SLIDE_TIMER: usize = 103;
 const SLIDE_MS: f32 = 180.0;
 const HOVER_TIMER: usize = 105;
-const HOVER_MS: f32 = 110.0;
+const HOVER_MS: f32 = 125.0;
 /// Hides the desktop pill after a scroll.
 const DESKTOP_TIMER: usize = 106;
 const DESKTOP_PILL_MS: u32 = 1100;
@@ -113,6 +116,7 @@ struct State {
     taskbar_hidden: bool,
     volume_popup: Option<volume::Popup>,
     palette: Palette,
+    dark: bool,
     backdrop: Backdrop,
     window_list_mode: WindowListMode,
     app_icon_size: f32,
@@ -228,6 +232,7 @@ impl Dock {
             taskbar_hidden: false,
             volume_popup: None,
             palette: Palette::new(true, true),
+            dark: true,
             backdrop: Backdrop::Acrylic,
             window_list_mode: WindowListMode::default(),
             app_icon_size: logic::DEFAULT_APP_ICON_SIZE,
@@ -402,7 +407,7 @@ impl Dock {
             }
             dock.hooks.push(hook);
         }
-        dock.apply_theme(Palette::new(true, true), Backdrop::Acrylic);
+        dock.apply_theme(true, Backdrop::Acrylic);
         dock.refresh();
         Ok(dock)
     }
@@ -484,7 +489,7 @@ impl Dock {
         assert!(s.parts().contains(&logic::Part::Power));
         let anchor = s.part_rect(logic::Part::Power).unwrap();
         let mut popup = volume::Popup::new(s.hwnd).unwrap();
-        popup.open(anchor, s.palette.text.r > 0.5, s.backdrop);
+        popup.open(anchor, s.dark, s.backdrop);
         popup.capture_verify();
         // Never invoke a power command or change the user's audio in a capture.
         s.volume_popup = Some(popup);
@@ -606,8 +611,8 @@ impl Dock {
         self.state.borrow_mut().refresh();
     }
 
-    pub fn apply_theme(&mut self, palette: Palette, backdrop: Backdrop) {
-        self.state.borrow_mut().apply_material(palette.text.r > 0.5, backdrop);
+    pub fn apply_theme(&mut self, dark: bool, backdrop: Backdrop) {
+        self.state.borrow_mut().apply_material(dark, backdrop);
     }
 
     /// Hosts the notification area in the dock while `enabled`, which
@@ -862,10 +867,11 @@ impl State {
     }
 
     fn apply_material(&mut self, dark: bool, backdrop: Backdrop) {
+        self.dark = dark;
         self.backdrop = backdrop;
-        self.palette = crate::theme::apply_backdrop(self.hwnd, dark, backdrop, true);
+        self.palette = crate::theme::apply_dock_backdrop(self.hwnd, dark, backdrop, true);
         for hwnd in [self.flyout, self.tip, self.windows] {
-            crate::theme::apply_backdrop(hwnd, dark, backdrop, true);
+            crate::theme::apply_dock_backdrop(hwnd, dark, backdrop, true);
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
@@ -1395,7 +1401,7 @@ impl State {
             self.left = x;
             self.width = width;
             let y = self.top + self.slide_offset(height);
-            crate::theme::shape(self.hwnd, width, height, 8.0 * layout_scale, self.dpi);
+            crate::theme::shape(self.hwnd, width, height, logic::RADIUS * layout_scale, self.dpi);
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, width, height, SWP_NOACTIVATE);
         }
         if previous != (self.dpi, self.left, self.top, self.width, self.scroll, self.capacity) {
@@ -1511,7 +1517,7 @@ impl State {
         let stale = match self.tip_target {
             Some(tray::Tip::Inline(i)) => i >= self.inline.len(),
             Some(tray::Tip::Flyout(i)) => i >= self.tray.len(),
-            Some(tray::Tip::Chevron | tray::Tip::Power | tray::Tip::Volume) => false,
+            Some(tray::Tip::Chevron | tray::Tip::Power | tray::Tip::ShowDesktop | tray::Tip::Volume) => false,
             // The desktop pill has nothing to do with the tray.
             None => false,
         };
@@ -1882,6 +1888,7 @@ impl State {
                 self.part_rect(logic::Part::Power),
             ),
             Some(tray::Tip::Volume) => ("Volume controls".to_string(), self.part_rect(logic::Part::Volume)),
+            Some(tray::Tip::ShowDesktop) => ("Show desktop".to_string(), self.part_rect(logic::Part::ShowDesktop)),
             Some(tray::Tip::Chevron) => (
                 if self.tray_host.is_some() && !self.tray.is_empty() {
                     "Show hidden icons"
@@ -1979,6 +1986,55 @@ impl State {
         }
     }
 
+    /// Settings, and the way back to Explorer's icons, by right-clicking the
+    /// dock where there is no app or button.
+    fn background_menu(&mut self) {
+        self.close_flyout();
+        self.hide_tip();
+        self.hide_windows();
+        unsafe {
+            let Ok(menu) = CreatePopupMenu() else {
+                return;
+            };
+            let _ = AppendMenuW(menu, MF_STRING, 1, w!("Doggo settings\u{2026}"));
+            let _ = AppendMenuW(menu, MF_STRING, 2, w!("Desk settings\u{2026}"));
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
+            let _ = AppendMenuW(menu, MF_STRING, 3, w!("Restore desktop icons"));
+            let mut point = POINT::default();
+            let _ = GetCursorPos(&mut point);
+            let _ = SetForegroundWindow(self.hwnd);
+            let command = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                point.x,
+                point.y,
+                None,
+                self.hwnd,
+                None,
+            )
+            .0;
+            let _ = DestroyMenu(menu);
+            match command {
+                1 => {
+                    if let Err(error) = crate::launch::settings(false) {
+                        eprintln!("Dock settings: {error}");
+                    }
+                }
+                2 => {
+                    let path = crate::desk::Desk::path();
+                    let path = path.to_string_lossy();
+                    if crate::launch::open(&path).is_err() {
+                        let _ = crate::launch::notepad(&path);
+                    }
+                }
+                3 => {
+                    let _ = PostMessageW(Some(self.owner), WM_DOCK_DESK_ICONS, WPARAM(0), LPARAM(0));
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn hit(&self, lp: LPARAM) -> Option<usize> {
         let scale = self.dpi as f32 / 96.0;
         self.app_layout().hit(
@@ -1986,6 +2042,15 @@ impl State {
             ((lp.0 >> 16) as i16) as f32 / scale,
             logic::layout_scale(self.app_icon_size),
         )
+    }
+
+    /// The strip above and below the app tiles is dock background, not an app.
+    /// Right-clicking there opens the dock's own menu instead of an app menu,
+    /// which keeps that menu reachable even when every slot is occupied.
+    fn on_padding(&self, lp: LPARAM) -> bool {
+        let scale = self.dpi as f32 / 96.0;
+        let y = ((lp.0 >> 16) as i16) as f32 / scale;
+        !(logic::TILE_TOP..logic::TILE_BOTTOM).contains(&y)
     }
 
     fn hit_part(&self, lp: LPARAM) -> Option<logic::Part> {
@@ -2036,12 +2101,16 @@ impl State {
                     self.volume_popup
                         .as_mut()
                         .unwrap()
-                        .open(anchor, self.palette.text.r > 0.5, self.backdrop);
+                        .open(anchor, self.dark, self.backdrop);
                 }
                 return;
             }
             logic::Part::Power => {
                 self.power_menu();
+                return;
+            }
+            logic::Part::ShowDesktop => {
+                desktops::show_desktop();
                 return;
             }
             logic::Part::Clock => "ms-actioncenter:",
@@ -2060,8 +2129,8 @@ impl State {
             let Ok(menu) = CreatePopupMenu() else { return };
             let _ = AppendMenuW(menu, MF_STRING, 1, w!("Lock computer"));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
-            let _ = AppendMenuW(menu, MF_STRING, 2, w!("Restart..."));
-            let _ = AppendMenuW(menu, MF_STRING, 3, w!("Shut down..."));
+            let _ = AppendMenuW(menu, MF_STRING, 2, w!("Restart"));
+            let _ = AppendMenuW(menu, MF_STRING, 3, w!("Shut down"));
             let Some(anchor) = self.part_rect(logic::Part::Power) else {
                 let _ = DestroyMenu(menu);
                 return;
@@ -2357,6 +2426,14 @@ fn fullscreen_foreground(dock: HWND) -> bool {
         if hwnd.is_invalid() || hwnd == dock || IsIconic(hwnd).as_bool() {
             return false;
         }
+        // Doggo's own windows can cover the monitor without being fullscreen
+        // apps. The desk in particular sits over the whole desktop, so treating
+        // it as fullscreen would keep the dock from coming back.
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == windows::Win32::System::Threading::GetCurrentProcessId() {
+            return false;
+        }
         let mut class = [0u16; 128];
         let len = GetClassNameW(hwnd, &mut class);
         if matches!(
@@ -2465,8 +2542,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(0);
                 }
                 WM_SETTINGCHANGE | WM_POWERBROADCAST | WM_THEMECHANGED => {
-                    let dark = s.palette.text.r > 0.5;
                     let backdrop = s.backdrop;
+                    let dark = s.dark;
                     s.apply_material(dark, backdrop);
                 }
                 WM_REFRESH => {
@@ -2577,12 +2654,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let hover_part = s.hit_part(lp);
                     if s.hover != hover || s.hover_part != hover_part {
                         s.hover = hover;
+                        let levels = s.items.len() + 1;
+                        s.hover_levels.resize(levels, 0.0);
+                        for (index, level) in s.hover_levels.iter_mut().enumerate() {
+                            if Some(index) != hover {
+                                *level = 0.0;
+                            }
+                        }
                         s.animate_hover();
                         s.hover_part = hover_part;
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                     s.hover_tip(match hover_part {
                         Some(logic::Part::Power) => Some(tray::Tip::Power),
+                        Some(logic::Part::ShowDesktop) => Some(tray::Tip::ShowDesktop),
                         Some(logic::Part::Volume) => Some(tray::Tip::Volume),
                         Some(logic::Part::Chevron) => Some(tray::Tip::Chevron),
                         Some(logic::Part::Tray(i)) => Some(tray::Tip::Inline(i)),
@@ -2638,7 +2723,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     s.close_flyout();
                     s.hide_windows();
                     if let Some(index) = s.hit(lp) {
-                        s.menu(index);
+                        if s.on_padding(lp) {
+                            s.background_menu();
+                        } else {
+                            s.menu(index);
+                        }
                     } else {
                         match s.hit_part(lp) {
                             Some(logic::Part::Volume) => {
@@ -2648,7 +2737,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                             }
                             Some(logic::Part::Chevron) => s.chevron_menu(),
                             Some(logic::Part::Tray(position)) => s.click_inline(position, Action::Menu),
-                            _ => {}
+                            _ => s.background_menu(),
                         }
                     }
                     return LRESULT(0);

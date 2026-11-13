@@ -1,7 +1,7 @@
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
-/// Brand color from `assets/icon.svg`.
-const BRAND: u32 = 0x0891B2;
+/// Midnight blue used for selection and subtle accents.
+const BRAND: u32 = 0x2867C7;
 
 fn rgba(hex: u32, a: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
@@ -22,6 +22,8 @@ pub struct Palette {
     pub accent: D2D1_COLOR_F,
     pub text_selection: D2D1_COLOR_F,
     pub tile: D2D1_COLOR_F,
+    /// High contrast tile used only behind nearly black app artwork.
+    pub icon_plate: D2D1_COLOR_F,
     pub scrollbar: D2D1_COLOR_F,
     /// An opaque background color, for marks on the accent color.
     pub background_solid: D2D1_COLOR_F,
@@ -42,9 +44,10 @@ impl Palette {
                 placeholder: rgba(0xFFFFFF, 0.42),
                 row_selected: rgba(0xFFFFFF, 0.08),
                 divider: rgba(0xFFFFFF, 0.08),
-                accent: rgba(0x22D3EE, 1.0),
+                accent: rgba(0x54A5FF, 1.0),
                 text_selection: rgba(BRAND, 0.6),
                 tile: rgba(0xFFFFFF, 0.07),
+                icon_plate: rgba(0xF3F4F6, 0.98),
                 scrollbar: rgba(0xFFFFFF, 0.22),
                 background_solid: rgba(0x1C1C1C, 1.0),
             }
@@ -63,6 +66,7 @@ impl Palette {
                 accent: rgba(BRAND, 1.0),
                 text_selection: rgba(BRAND, 0.3),
                 tile: rgba(0x000000, 0.05),
+                icon_plate: rgba(0xFFFFFF, 0.92),
                 scrollbar: rgba(0x000000, 0.25),
                 background_solid: rgba(0xFFFFFF, 1.0),
             }
@@ -145,11 +149,35 @@ pub fn apply_backdrop(
     backdrop: crate::config::Backdrop,
     persistent: bool,
 ) -> Palette {
+    material(hwnd, dark, backdrop, persistent, |translucent| {
+        Palette::new(dark, translucent)
+    })
+}
+
+/// The dock and its own popups: the same material, always dark, tinted green.
+pub fn apply_dock_backdrop(
+    hwnd: windows::Win32::Foundation::HWND,
+    dark: bool,
+    backdrop: crate::config::Backdrop,
+    persistent: bool,
+) -> Palette {
+    material(hwnd, dark, backdrop, persistent, |translucent| {
+        Palette::new(dark, translucent)
+    })
+}
+
+fn material(
+    hwnd: windows::Win32::Foundation::HWND,
+    dark: bool,
+    backdrop: crate::config::Backdrop,
+    persistent: bool,
+    make: impl Fn(bool) -> Palette,
+) -> Palette {
     use crate::config::Backdrop;
     use windows::Win32::Graphics::Dwm::*;
     use windows::Win32::UI::Controls::MARGINS;
     let translucent = backdrop != Backdrop::Solid && transparency_available();
-    let mut palette = Palette::new(dark, translucent);
+    let mut palette = make(translucent);
     unsafe {
         let set = |attr, value: i32| DwmSetWindowAttribute(hwnd, attr, (&value as *const i32).cast(), 4);
         let _ = set(DWMWA_USE_IMMERSIVE_DARK_MODE, i32::from(dark));
@@ -168,24 +196,23 @@ pub fn apply_backdrop(
         {
             use windows::Win32::UI::WindowsAndMessaging::*;
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-            SetWindowLongPtrW(
-                hwnd,
-                GWL_STYLE,
-                if persistent {
-                    style & !(WS_CAPTION.0 as isize)
-                } else {
-                    style | WS_CAPTION.0 as isize
-                },
-            );
-            let _ = SetWindowPos(
-                hwnd,
-                None,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            );
+            let next = if persistent {
+                style & !(WS_CAPTION.0 as isize)
+            } else {
+                style | WS_CAPTION.0 as isize
+            };
+            if next != style {
+                SetWindowLongPtrW(hwnd, GWL_STYLE, next);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+            }
         }
         let system = set(DWMWA_SYSTEMBACKDROP_TYPE, material.0).is_ok();
         let _ = DwmExtendFrameIntoClientArea(
@@ -202,7 +229,7 @@ pub fn apply_backdrop(
         }
         let composition = composition_acrylic(hwnd, accent, &palette);
         if !system || accent && !composition {
-            palette = Palette::new(dark, false);
+            palette = make(false);
         }
     }
     palette
@@ -210,7 +237,7 @@ pub fn apply_backdrop(
 
 /// The shared tint and hairline, in device-independent coordinates.
 pub fn paint_background(
-    rt: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+    rt: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
     brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
     palette: &Palette,
     radius: f32,

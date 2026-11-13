@@ -6,11 +6,11 @@ use crate::indexer::AppEntry;
 pub const DEFAULT_APP_ICON_SIZE: f32 = 32.0;
 pub const MIN_APP_ICON_SIZE: f32 = 24.0;
 pub const MAX_APP_ICON_SIZE: f32 = 40.0;
-pub const TILE_TOP: f32 = 5.0;
-pub const TILE_BOTTOM: f32 = 51.0;
-pub const TILE_RADIUS: f32 = 8.0;
-pub const ICON_CENTER_Y: f32 = 26.0;
-pub const INDICATOR_TOP: f32 = 46.0;
+pub const TILE_TOP: f32 = 9.0;
+pub const TILE_BOTTOM: f32 = 57.0;
+pub const TILE_RADIUS: f32 = 10.0;
+pub const ICON_CENTER_Y: f32 = 30.0;
+pub const INDICATOR_TOP: f32 = 54.0;
 
 pub fn slide_value(from: f32, to: f32, progress: f32) -> f32 {
     let t = progress.clamp(0.0, 1.0);
@@ -22,11 +22,13 @@ pub fn icon_pixels(dpi: u32, size: f32) -> i32 {
     (size * dpi as f32 / 96.0).round() as i32
 }
 
-pub const HEIGHT: f32 = 56.0;
+pub const HEIGHT: f32 = 64.0;
 pub const MARGIN: f32 = 9.0;
 pub const SLOT: f32 = 48.0;
 pub const PAD: f32 = 8.0;
 pub const SEPARATOR: f32 = 9.0;
+/// The dock's corner radius, in DIPs, for the glass shell.
+pub const RADIUS: f32 = 13.0;
 
 pub fn layout_scale(app_icon_size: f32) -> f32 {
     app_icon_size / DEFAULT_APP_ICON_SIZE
@@ -181,6 +183,7 @@ pub enum Part {
     Battery,
     Clock,
     Power,
+    ShowDesktop,
 }
 
 impl Part {
@@ -192,6 +195,7 @@ impl Part {
             Part::Battery => BATTERY_W,
             Part::Clock => CLOCK_W,
             Part::Power => 32.0,
+            Part::ShowDesktop => 30.0,
         }
     }
 
@@ -212,6 +216,7 @@ pub fn parts(tray: Option<usize>, volume: bool, battery: bool) -> Vec<Part> {
                 (Part::Battery, battery),
                 (Part::Clock, true),
                 (Part::Power, true),
+                (Part::ShowDesktop, true),
             ]
             .into_iter()
             .filter_map(|(part, shown)| shown.then_some(part)),
@@ -459,7 +464,7 @@ mod tests {
                 }
                 let clock = layout.part_left(Part::Clock, &parts, scale).unwrap();
                 assert_eq!(
-                    clock + (CLOCK_W + Part::Power.width() + PAD) * scale,
+                    clock + (CLOCK_W + Part::Power.width() + Part::ShowDesktop.width() + PAD) * scale,
                     layout.total_width(&parts, scale)
                 );
             }
@@ -507,9 +512,9 @@ mod tests {
         let normal = layout_scale(DEFAULT_APP_ICON_SIZE);
         let large = layout_scale(MAX_APP_ICON_SIZE);
         assert_eq!((small, normal, large), (0.75, 1.0, 1.25));
-        assert_eq!(height(small), 42.0);
+        assert_eq!(height(small), 48.0);
         assert_eq!(slot(small), 36.0);
-        assert_eq!(height(large), 70.0);
+        assert_eq!(height(large), 80.0);
         assert_eq!(slot(large), 60.0);
 
         for scale in [small, normal, large] {
@@ -530,7 +535,7 @@ mod tests {
                 let bottom = height(scale);
                 assert_eq!(left, (8.0 + index as f32 * 48.0) * size / 32.0);
                 assert_eq!(right, left_scaled(index + 1, scale));
-                assert_eq!(bottom, 56.0 * size / 32.0);
+                assert_eq!(bottom, 64.0 * size / 32.0);
                 assert_eq!(hit_scaled(left, 0.0, 8, scale), Some(index));
                 assert_eq!(hit_scaled(right - 0.5, bottom - 0.5, 8, scale), Some(index));
                 assert_eq!(hit_scaled(left, bottom, 8, scale), None);
@@ -607,7 +612,7 @@ mod tests {
     }
     #[test]
     fn floating_layout_and_hit_targets() {
-        assert_eq!((HEIGHT, MARGIN, SLOT), (56.0, 9.0, 48.0));
+        assert_eq!((HEIGHT, MARGIN, SLOT), (64.0, 9.0, 48.0));
         assert_eq!(width(2), 160.0);
         for count in [0, 1, 8, 30] {
             for index in 0..=count {
@@ -617,7 +622,10 @@ mod tests {
             assert_eq!(hit(PAD, HEIGHT, count), None);
             let all = parts(None, true, true);
             let clock = part_left(Part::Clock, count, &all).unwrap();
-            assert_eq!(clock + CLOCK_W + Part::Power.width() + PAD, total_width(count, &all));
+            assert_eq!(
+                clock + CLOCK_W + Part::Power.width() + Part::ShowDesktop.width() + PAD,
+                total_width(count, &all)
+            );
             let volume = part_left(Part::Volume, count, &all).unwrap();
             assert_eq!(part_hit(volume - 1.0, 20.0, count, &all), Some(Part::Chevron));
             assert_eq!(part_hit(clock + 1.0, 20.0, count, &all), Some(Part::Clock));
@@ -631,7 +639,7 @@ mod tests {
                 DEFAULT_APP_ICON_SIZE * dpi as f32 / 96.0
             );
         }
-        assert_eq!(((HEIGHT + MARGIN) * 120.0 / 96.0).round() as i32, 81);
+        assert_eq!(((HEIGHT + MARGIN) * 120.0 / 96.0).round() as i32, 91);
     }
     #[test]
     fn tray_sits_between_apps_and_status() {
@@ -661,9 +669,15 @@ mod tests {
             total_width(2, &parts(None, true, true)) + 2.0 * TRAY_W
         );
         // Inline icons are capped; with none, only the chevron shows.
-        assert_eq!(parts(Some(9), false, false).len(), 1 + MAX_INLINE + 2);
-        assert_eq!(parts(Some(0), false, false), [Part::Chevron, Part::Clock, Part::Power]);
-        assert_eq!(parts(None, false, false), [Part::Chevron, Part::Clock, Part::Power]);
+        assert_eq!(parts(Some(9), false, false).len(), 1 + MAX_INLINE + 3);
+        assert_eq!(
+            parts(Some(0), false, false),
+            [Part::Chevron, Part::Clock, Part::Power, Part::ShowDesktop]
+        );
+        assert_eq!(
+            parts(None, false, false),
+            [Part::Chevron, Part::Clock, Part::Power, Part::ShowDesktop]
+        );
         // Tray icons fit the dock's height budget.
         const { assert!(TRAY_ICON < HEIGHT && TRAY_ICON < TRAY_W) };
     }

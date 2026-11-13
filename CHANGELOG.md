@@ -2,10 +2,36 @@
 
 User-facing changes in each release. Each release on GitHub lists these notes and its pull requests.
 
+## Doggo personal fork - 2026-11-13
+
+- Commit an in-place tab rename when clicking anywhere else in its container, and apply fence transparency changes immediately.
+- Align the in-place tab editor with its rendered label and commit edits immediately when the editor loses focus.
+- Edit tab names in place after clicking **+**, and on double-click to rename. Move new, rename and remove tab actions to the main fence context menu; protect the **Main** tab from removal and restore it in existing layouts where it was deleted.
+
+## Doggo personal fork - 2026-11-12
+
+- Add saved, separately switchable tabs to desktop fences and remove the weather widget and its Settings entry.
+- Magnify only the dock icon under the pointer, with a restrained scale and smooth return.
+- Render fences as per-pixel layered content so transparent fills reveal the wallpaper instead of a black surface.
+- Draw translucent fence title bars once to prevent a visible overlap seam.
+- Allow resizing fences horizontally and vertically; preserve the chosen height in the desk layout.
+- Set each fence's icon size, resize it to a compact height, and scroll or drag its scrollbar to reach hidden items.
+- Add custom fences with create, rename, remove and move-item actions; resize fences by dragging their lower-right corner. Layout changes persist.
+- Smooth fence scrolling and browse folders inline, with a back button in the fence title.
+- Add per-fence Icons, Thumbnails and Details views, with Windows Shell thumbnail previews and file metadata columns.
+- Add saved per-fence transparency and sort modes for name, type, size or modified date.
+
 ## Doggo personal fork - 2026-11-11
 
 - Start with Windows now launches Doggo through a sign-in task with no added delay. Doggo shows the dock at sign-in and retries sooner if Explorer is still starting.
 - Save packaged app pins by their stable Windows app ID and repair old version-specific pins when the app can be identified.
+
+## Doggo personal fork - 2026-11-12
+
+- Replace teal and cyan accents across Doggo with midnight electric blue in dark and light themes, including the dock glow, search, Fences and Settings.
+- Add saved per-fence color presets through each fence's context menu.
+
+- Apply the selected light, dark or Windows theme to the dock, dock popups, search and Fences. Remove the terminal-only black dock background and scanlines so dark and transparent app icons remain visible on either theme.
 
 ## Doggo personal fork - 2026-11-10
 

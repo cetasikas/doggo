@@ -14,21 +14,33 @@ use windows::Win32::Graphics::Direct2D::{Common::*, *};
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetForegroundWindow};
-use windows::core::{PCWSTR, Result, w};
+use windows::core::{Interface, PCWSTR, Result, w};
 
 /// Vertical layout, in DIPs, shared by the app slots and the status parts.
 /// Icons sit a little above center to leave room for the running indicator.
 use super::logic::{ICON_CENTER_Y, INDICATOR_TOP, TILE_BOTTOM, TILE_RADIUS, TILE_TOP};
-const UPPER: (f32, f32) = (8.0, 29.0);
-const LOWER: (f32, f32) = (28.0, 48.0);
+const UPPER: (f32, f32) = (12.0, 33.0);
+const LOWER: (f32, f32) = (32.0, 52.0);
+/// Extra icon scale at the crest of the macOS-style magnification wave.
+const MAGNIFY: f32 = 0.12;
 
 struct Target {
-    rt: ID2D1HwndRenderTarget,
+    rt: ID2D1RenderTarget,
+    /// Set for a window-backed target, whose pixel size can change.
+    hwnd: Option<ID2D1HwndRenderTarget>,
     brush: ID2D1SolidColorBrush,
-    bitmaps: HashMap<String, (Arc<IconPixels>, ID2D1Bitmap)>,
+    bitmaps: HashMap<String, Bitmap>,
     /// Notification-area icons, by their tray identity.
     tray: HashMap<Key, (Arc<IconPixels>, ID2D1Bitmap)>,
     size: D2D_SIZE_U,
+}
+
+/// A cached app icon, ready to draw.
+struct Bitmap {
+    pixels: Arc<IconPixels>,
+    bitmap: ID2D1Bitmap,
+    /// Nearly black artwork needs a lit plate behind it to read on the glass.
+    dark: bool,
 }
 
 struct Formats {
@@ -36,8 +48,9 @@ struct Formats {
     letter: IDWriteTextFormat,
     time: IDWriteTextFormat,
     small: IDWriteTextFormat,
-    /// Segoe Fluent Icons, for the search button and the status glyphs.
-    search: IDWriteTextFormat,
+    /// The terminal prompt in the search slot.
+    prompt: IDWriteTextFormat,
+    /// Segoe Fluent Icons, for the status glyphs.
     glyph: IDWriteTextFormat,
     chevron: IDWriteTextFormat,
     /// Tooltips: left-aligned and wrapping.
@@ -50,9 +63,9 @@ pub struct Renderer {
     factory: ID2D1Factory,
     dw: IDWriteFactory,
     formats: Formats,
-    text_font: PCWSTR,
     display_font: PCWSTR,
     icon_font: PCWSTR,
+    mono_font: PCWSTR,
     format_scale: f32,
     target: Option<Target>,
     shared_target: Option<Target>,
@@ -87,7 +100,7 @@ pub struct FlyoutFrame<'a> {
     pub hover: Option<usize>,
 }
 
-fn create_formats(dw: &IDWriteFactory, text: PCWSTR, display: PCWSTR, icons: PCWSTR, scale: f32) -> Result<Formats> {
+fn create_formats(dw: &IDWriteFactory, display: PCWSTR, icons: PCWSTR, mono: PCWSTR, scale: f32) -> Result<Formats> {
     unsafe {
         let format = |family: PCWSTR, weight, size| -> Result<IDWriteTextFormat> {
             let format = dw.CreateTextFormat(
@@ -105,19 +118,19 @@ fn create_formats(dw: &IDWriteFactory, text: PCWSTR, display: PCWSTR, icons: PCW
             Ok(format)
         };
         let tip = dw.CreateTextFormat(
-            text,
+            mono,
             None,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            12.0,
+            12.0 * scale,
             w!("en-us"),
         )?;
         tip.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
         tip.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
         tip.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
         let row = dw.CreateTextFormat(
-            text,
+            mono,
             None,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
@@ -128,9 +141,9 @@ fn create_formats(dw: &IDWriteFactory, text: PCWSTR, display: PCWSTR, icons: PCW
         row.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
         Ok(Formats {
             letter: format(display, DWRITE_FONT_WEIGHT_SEMI_BOLD, 15.0)?,
-            time: format(text, DWRITE_FONT_WEIGHT_SEMI_BOLD, 14.0)?,
-            small: format(text, DWRITE_FONT_WEIGHT_NORMAL, 12.5)?,
-            search: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 21.0)?,
+            time: format(mono, DWRITE_FONT_WEIGHT_SEMI_BOLD, 13.5)?,
+            small: format(mono, DWRITE_FONT_WEIGHT_NORMAL, 11.0)?,
+            prompt: format(mono, DWRITE_FONT_WEIGHT_SEMI_BOLD, 15.0)?,
             glyph: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 17.0)?,
             chevron: format(icons, DWRITE_FONT_WEIGHT_NORMAL, 12.0)?,
             tip,
@@ -166,13 +179,13 @@ impl Renderer {
             let factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let fonts = crate::render::Fonts::installed(&dw);
-            let formats = create_formats(&dw, fonts.text, fonts.display, fonts.icons, 1.0)?;
+            let formats = create_formats(&dw, fonts.display, fonts.icons, fonts.mono, 1.0)?;
             Ok(Self {
                 factory,
                 formats,
-                text_font: fonts.text,
                 display_font: fonts.display,
                 icon_font: fonts.icons,
+                mono_font: fonts.mono,
                 format_scale: 1.0,
                 dw,
                 target: None,
@@ -184,16 +197,24 @@ impl Renderer {
     pub fn draw(&mut self, hwnd: HWND, frame: &Frame) -> Result<()> {
         self.update_formats(frame.layout_scale)?;
         self.paint(hwnd, frame.dpi, frame.palette, |target, formats| {
-            background(target, frame.palette, frame.layout_scale);
+            dock_background(
+                target,
+                frame.palette,
+                frame.layout_scale,
+                frame.layout.total_width(frame.parts, frame.layout_scale),
+                logic::height(frame.layout_scale),
+                true,
+            );
             unsafe { draw(target, formats, frame) }.and_then(|()| draw_status(target, formats, frame))
         })
     }
 
     pub fn draw_on(&mut self, rt: &ID2D1HwndRenderTarget, frame: &Frame) -> Result<()> {
         self.update_formats(frame.layout_scale)?;
-        if self.shared_target.as_ref().is_none_or(|t| t.rt != *rt) {
+        if self.shared_target.as_ref().is_none_or(|t| t.hwnd.as_ref() != Some(rt)) {
             self.shared_target = Some(Target {
-                rt: rt.clone(),
+                rt: rt.cast()?,
+                hwnd: Some(rt.clone()),
                 brush: unsafe { rt.CreateSolidColorBrush(&frame.palette.text, None)? },
                 bitmaps: HashMap::new(),
                 tray: HashMap::new(),
@@ -201,12 +222,20 @@ impl Renderer {
             });
         }
         let target = self.shared_target.as_mut().unwrap();
+        dock_background(
+            target,
+            frame.palette,
+            frame.layout_scale,
+            frame.layout.total_width(frame.parts, frame.layout_scale),
+            logic::height(frame.layout_scale),
+            false,
+        );
         unsafe { draw(target, &self.formats, frame) }.and_then(|()| draw_status(target, &self.formats, frame))
     }
 
     fn update_formats(&mut self, scale: f32) -> Result<()> {
         if self.format_scale != scale {
-            self.formats = create_formats(&self.dw, self.text_font, self.display_font, self.icon_font, scale)?;
+            self.formats = create_formats(&self.dw, self.display_font, self.icon_font, self.mono_font, scale)?;
             self.format_scale = scale;
         }
         Ok(())
@@ -454,6 +483,39 @@ impl Renderer {
         Ok((2.0 * DESKTOP_PAD + dots + DESKTOP_LABEL_GAP + label, height))
     }
 
+    /// Renders the dock onto a bitmap target for the preview test, over the
+    /// given desktop color. The dock's own fill is what unifies the look; only
+    /// the blurred acrylic of a live window is missing.
+    #[cfg(test)]
+    pub fn draw_to(&mut self, rt: &ID2D1RenderTarget, frame: &Frame, desktop: D2D1_COLOR_F) -> Result<()> {
+        self.update_formats(frame.layout_scale)?;
+        let mut target = Target {
+            rt: rt.clone(),
+            hwnd: None,
+            brush: unsafe { rt.CreateSolidColorBrush(&frame.palette.text, None)? },
+            bitmaps: HashMap::new(),
+            tray: HashMap::new(),
+            size: D2D_SIZE_U::default(),
+        };
+        unsafe {
+            rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+            rt.BeginDraw();
+            rt.Clear(Some(&desktop));
+        }
+        dock_background(
+            &target,
+            frame.palette,
+            frame.layout_scale,
+            frame.layout.total_width(frame.parts, frame.layout_scale),
+            logic::height(frame.layout_scale),
+            false,
+        );
+        let drawn = unsafe { draw(&mut target, &self.formats, frame) }
+            .and_then(|()| draw_status(&mut target, &self.formats, frame));
+        let ended = unsafe { rt.EndDraw(None, None) };
+        drawn.and(ended)
+    }
+
     /// Sizes the target to the window, then draws with `f` between BeginDraw and EndDraw.
     fn paint(
         &mut self,
@@ -488,15 +550,18 @@ impl Renderer {
                 rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
                 self.target = Some(Target {
                     brush: rt.CreateSolidColorBrush(&palette.text, None)?,
-                    rt,
+                    rt: rt.cast()?,
+                    hwnd: Some(rt),
                     bitmaps: HashMap::new(),
                     tray: HashMap::new(),
                     size,
                 });
             }
             let target = self.target.as_mut().unwrap();
-            if target.size.width != size.width || target.size.height != size.height {
-                target.rt.Resize(&size)?;
+            if let Some(rt) = &target.hwnd
+                && (target.size.width != size.width || target.size.height != size.height)
+            {
+                rt.Resize(&size)?;
                 target.size = size;
             }
             target.rt.SetDpi(dpi as f32, dpi as f32);
@@ -562,9 +627,62 @@ fn background(target: &Target, palette: &Palette, layout_scale: f32) {
     crate::theme::paint_background(&target.rt, &target.brush, palette, 8.0 * layout_scale);
 }
 
+/// The dock uses the same tinted glass, accent and text colors as search.
+/// `clear` resets a dedicated window's target.
+fn dock_background(target: &Target, palette: &Palette, layout_scale: f32, width: f32, height: f32, clear: bool) {
+    let radius = logic::RADIUS * layout_scale;
+    if clear {
+        crate::theme::paint_background(&target.rt, &target.brush, palette, radius);
+    } else {
+        unsafe {
+            target.brush.SetColor(&D2D1_COLOR_F {
+                a: 0.94,
+                ..palette.background_solid
+            });
+            target
+                .rt
+                .FillRoundedRectangle(&rounded(rect(0.0, 0.0, width, height), radius), &target.brush);
+        }
+    }
+    let (mut dpi, mut dpi_y) = (96.0, 96.0);
+    unsafe { target.rt.GetDpi(&mut dpi, &mut dpi_y) };
+    let pixel = 96.0 / dpi;
+    unsafe {
+        target.brush.SetColor(&D2D1_COLOR_F {
+            a: 0.035,
+            ..palette.accent
+        });
+        target.rt.FillRoundedRectangle(
+            &rounded(rect(1.0 * pixel, 1.0 * pixel, width - pixel, height - pixel), radius),
+            &target.brush,
+        );
+        target.brush.SetColor(&D2D1_COLOR_F {
+            a: 0.42,
+            ..palette.accent
+        });
+        target.rt.DrawRoundedRectangle(
+            &rounded(
+                rect(pixel / 2.0, pixel / 2.0, width - pixel / 2.0, height - pixel / 2.0),
+                radius,
+            ),
+            &target.brush,
+            pixel,
+            None,
+        );
+        // A soft highlight gives the theme-colored rim a glass edge.
+        target.brush.SetColor(&D2D1_COLOR_F {
+            a: 0.15,
+            ..palette.text
+        });
+        target
+            .rt
+            .FillRectangle(&rect(radius, pixel, width - radius, pixel * 2.0), &target.brush);
+    }
+}
+
 /// Draws a notification icon centered on (`x`, `y`). Its pixels are made
 /// for this DPI, so they map one to one onto the screen.
-fn tray_icon(target: &mut Target, dpi: u32, shown: &Shown, x: f32, y: f32) -> Result<()> {
+fn tray_icon(target: &mut Target, dpi: u32, palette: &Palette, shown: &Shown, x: f32, y: f32) -> Result<()> {
     let Some(pixels) = &shown.pixels else { return Ok(()) };
     let key = shown.icon.key();
     let scale = dpi as f32 / 96.0;
@@ -592,6 +710,13 @@ fn tray_icon(target: &mut Target, dpi: u32, shown: &Shown, x: f32, y: f32) -> Re
         let (width, height) = (pixels.width as f32 / scale, pixels.height as f32 / scale);
         let left = ((x - width / 2.0) * scale).round() / scale;
         let top = ((y - height / 2.0) * scale).round() / scale;
+        if is_dark(pixels) {
+            target.brush.SetColor(&palette.icon_plate);
+            target.rt.FillRoundedRectangle(
+                &rounded(rect(left - 1.0, top - 1.0, left + width + 1.0, top + height + 1.0), 4.0),
+                &target.brush,
+            );
+        }
         target.rt.DrawBitmap(
             &target.tray[&key].1,
             Some(&rect(left, top, left + width, top + height)),
@@ -630,7 +755,14 @@ fn draw_flyout(target: &mut Target, frame: &FlyoutFrame) -> Result<()> {
                 );
             }
         }
-        tray_icon(target, frame.dpi, shown, left + cell / 2.0, top + cell / 2.0)?;
+        tray_icon(
+            target,
+            frame.dpi,
+            frame.palette,
+            shown,
+            left + cell / 2.0,
+            top + cell / 2.0,
+        )?;
     }
     Ok(())
 }
@@ -643,9 +775,9 @@ fn separator(target: &Target, frame: &Frame, x: f32) {
         target.rt.FillRectangle(
             &frame.snap_rect(
                 x,
-                17.0 * frame.layout_scale,
+                20.0 * frame.layout_scale,
                 x + frame.hairline(),
-                39.0 * frame.layout_scale,
+                44.0 * frame.layout_scale,
             ),
             &target.brush,
         );
@@ -674,43 +806,68 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
         }
         let foreground = GetForegroundWindow().0 as isize;
         target.bitmaps.retain(|key, _| icons.contains_key(key));
+        let scale = frame.layout_scale;
+        let slot = logic::slot(scale);
+        // A soft accent glow follows the magnification wave. Drawn in its
+        // own pass so neighboring glows never sit on top of an icon.
+        for index in 1..=running {
+            let progress = frame.hover_levels.get(index).copied().unwrap_or(0.0);
+            if progress <= 0.001 {
+                continue;
+            }
+            let x = frame.layout.left(index, scale);
+            let icon_size = *app_icon_size * (1.0 + MAGNIFY * progress);
+            let bottom = ICON_CENTER_Y * scale + app_icon_size / 2.0;
+            let top = bottom - icon_size;
+            let pad = 3.0 * scale + 2.0 * progress * scale;
+            target.brush.SetColor(&D2D1_COLOR_F {
+                a: 0.12 * progress,
+                ..p.accent
+            });
+            target.rt.FillRoundedRectangle(
+                &rounded(
+                    frame.snap_rect(
+                        x + (slot - icon_size) / 2.0 - pad,
+                        (top - pad).max(scale),
+                        x + (slot + icon_size) / 2.0 + pad,
+                        bottom + 2.0 * scale,
+                    ),
+                    11.0 * scale,
+                ),
+                &target.brush,
+            );
+        }
         for index in 0..=running {
-            let x = frame.layout.left(index, frame.layout_scale);
-            let slot = logic::slot(frame.layout_scale);
+            let x = frame.layout.left(index, scale);
+            let progress = frame.hover_levels.get(index).copied().unwrap_or(0.0);
+            let eased = progress * progress * (3.0 - 2.0 * progress);
             let item = index.checked_sub(1).and_then(|i| items.get(i + scroll));
             let active = item.is_some_and(|item| item.windows.iter().any(|window| window.hwnd == foreground));
-            if active {
-                tile(
-                    target,
-                    frame,
-                    x + 2.0 * frame.layout_scale,
-                    x + slot - 2.0 * frame.layout_scale,
-                    &p.tile,
+            if index == 0 {
+                // A terminal prompt stands in for the search glyph.
+                if *hover == Some(0) {
+                    tile(target, frame, x + 4.0 * scale, x + slot - 4.0 * scale, &p.row_selected);
+                }
+                target.brush.SetColor(&D2D1_COLOR_F { a: 0.88, ..p.accent });
+                text(
+                    &target.rt,
+                    &target.brush,
+                    &formats.prompt,
+                    ">_",
+                    frame.snap_rect(x, TILE_TOP * scale, x + slot, TILE_BOTTOM * scale),
                 );
+                continue;
             }
-            if *hover == Some(index) {
-                tile(
-                    target,
-                    frame,
-                    x + 2.0 * frame.layout_scale,
-                    x + slot - 2.0 * frame.layout_scale,
-                    &p.row_selected,
-                );
-            }
-            let progress = frame.hover_levels.get(index).copied().unwrap_or(0.0);
-            let lift = 2.0 * progress * progress * (3.0 - 2.0 * progress);
-            let icon_size = *app_icon_size;
-            let icon_top = ICON_CENTER_Y * frame.layout_scale - icon_size / 2.0 - lift * frame.layout_scale;
+            let icon_size = *app_icon_size * (1.0 + MAGNIFY * eased);
+            let icon_bottom = ICON_CENTER_Y * scale + app_icon_size / 2.0;
+            let icon_top = icon_bottom - icon_size;
             let icon_rect = frame.snap_rect(
                 x + (slot - icon_size) / 2.0,
                 icon_top,
                 x + (slot + icon_size) / 2.0,
-                icon_top + icon_size,
+                icon_bottom,
             );
             let Some(item) = item else {
-                // A quiet search affordance leaves the accent to the running indicator.
-                target.brush.SetColor(&p.subtext);
-                text(&target.rt, &target.brush, &formats.search, "\u{E721}", icon_rect);
                 continue;
             };
             let fallback = item
@@ -722,7 +879,10 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                 .get_key_value(&item.app.id)
                 .or_else(|| fallback.as_ref().and_then(|key| icons.get_key_value(key)));
             if let Some((key, pixels)) = icon {
-                let stale = target.bitmaps.get(key).is_none_or(|(old, _)| !Arc::ptr_eq(old, pixels));
+                let stale = target
+                    .bitmaps
+                    .get(key)
+                    .is_none_or(|old| !Arc::ptr_eq(&old.pixels, pixels));
                 if stale {
                     let bitmap = target.rt.CreateBitmap(
                         D2D_SIZE_U {
@@ -740,10 +900,27 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                             dpiY: 96.0,
                         },
                     )?;
-                    target.bitmaps.insert(key.clone(), (pixels.clone(), bitmap));
+                    target.bitmaps.insert(
+                        key.clone(),
+                        Bitmap {
+                            pixels: pixels.clone(),
+                            bitmap,
+                            dark: is_dark(pixels),
+                        },
+                    );
+                }
+                if target.bitmaps[key].dark {
+                    // Black artwork needs something lit to sit on. Only dark
+                    // icons get a plate, so the glass stays free of tile boxes.
+                    // The plate has to be nearly opaque: at 0.15 the black
+                    // ChatGPT mark read as an empty square on the dark glass.
+                    target.brush.SetColor(&p.icon_plate);
+                    target
+                        .rt
+                        .FillRoundedRectangle(&rounded(icon_rect, icon_size * 0.22), &target.brush);
                 }
                 target.rt.DrawBitmap(
-                    &target.bitmaps[key].1,
+                    &target.bitmaps[key].bitmap,
                     Some(&icon_rect),
                     1.0,
                     D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
@@ -767,22 +944,35 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                     (true, true) => &[12.0, 3.0],
                 };
                 let total = marks.iter().sum::<f32>() + GAP * (marks.len() - 1) as f32;
-                let mut left = x + slot / 2.0 - total / 2.0 * frame.layout_scale;
-                target.brush.SetColor(if active { &p.accent } else { &p.subtext });
+                let mut left = x + slot / 2.0 - total / 2.0 * scale;
                 for &width in marks {
-                    target.rt.FillRoundedRectangle(
-                        &rounded(
-                            frame.snap_rect(
-                                left,
-                                INDICATOR_TOP * frame.layout_scale,
-                                left + width * frame.layout_scale,
-                                (INDICATOR_TOP + 3.0) * frame.layout_scale,
-                            ),
-                            1.5 * frame.layout_scale,
-                        ),
-                        &target.brush,
+                    let bar = frame.snap_rect(
+                        left,
+                        INDICATOR_TOP * scale,
+                        left + width * scale,
+                        (INDICATOR_TOP + 3.0) * scale,
                     );
-                    left += (width + GAP) * frame.layout_scale;
+                    if active {
+                        // A glow lifts the active app's dash off the glass.
+                        target.brush.SetColor(&D2D1_COLOR_F { a: 0.18, ..p.accent });
+                        target.rt.FillRoundedRectangle(
+                            &rounded(
+                                D2D_RECT_F {
+                                    left: bar.left - 3.0 * scale,
+                                    top: bar.top - 1.0 * scale,
+                                    right: bar.right + 3.0 * scale,
+                                    bottom: bar.bottom + 1.0 * scale,
+                                },
+                                4.0 * scale,
+                            ),
+                            &target.brush,
+                        );
+                    }
+                    target.brush.SetColor(if active { &p.accent } else { &p.subtext });
+                    target
+                        .rt
+                        .FillRoundedRectangle(&rounded(bar, 1.5 * scale), &target.brush);
+                    left += (width + GAP) * scale;
                 }
             }
         }
@@ -790,8 +980,20 @@ unsafe fn draw(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
     }
 }
 
+/// Alpha-weighted luminance, so a mostly transparent icon is judged by its ink.
+fn is_dark(pixels: &IconPixels) -> bool {
+    let mut weight = 0.0f32;
+    let mut luma = 0.0f32;
+    for px in pixels.bgra.as_chunks::<4>().0 {
+        let alpha = px[3] as f32 / 255.0;
+        weight += alpha;
+        luma += alpha * (0.2126 * px[2] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[0] as f32);
+    }
+    weight > 0.0 && luma / (weight * 255.0) < 0.18
+}
+
 fn text(
-    rt: &ID2D1HwndRenderTarget,
+    rt: &ID2D1RenderTarget,
     brush: &ID2D1SolidColorBrush,
     format: &IDWriteTextFormat,
     text: &str,
@@ -860,15 +1062,13 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
             );
         }
         match part {
-            Part::Chevron | Part::Power => {
+            Part::Chevron | Part::Power | Part::ShowDesktop => {
                 unsafe { target.brush.SetColor(&p.text) };
-                // Up opens the flyout and down closes it, as on the taskbar.
-                let glyph = if part == Part::Power {
-                    "\u{E7E8}"
-                } else if frame.flyout_open {
-                    "\u{E70D}"
-                } else {
-                    "\u{E70E}"
+                let glyph = match part {
+                    Part::Power => "\u{E7E8}",
+                    Part::ShowDesktop => "\u{E977}",
+                    _ if frame.flyout_open => "\u{E70D}",
+                    _ => "\u{E70E}",
                 };
                 let area = rect(
                     left,
@@ -879,7 +1079,7 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                 text(
                     &target.rt,
                     &target.brush,
-                    if part == Part::Power {
+                    if part != Part::Chevron {
                         &formats.glyph
                     } else {
                         &formats.chevron
@@ -895,6 +1095,7 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                     tray_icon(
                         target,
                         frame.dpi,
+                        p,
                         shown,
                         left + part.width_scaled(frame.layout_scale) / 2.0,
                         middle,
@@ -942,7 +1143,7 @@ fn draw_status(target: &mut Target, formats: &Formats, frame: &Frame) -> Result<
                     brush.SetColor(&p.subtext);
                     text(rt, brush, &formats.small, &status.date, lower);
                 }
-                Part::Chevron | Part::Tray(_) | Part::Power => {}
+                Part::Chevron | Part::Tray(_) | Part::Power | Part::ShowDesktop => {}
             }
         }
     }
@@ -955,3 +1156,258 @@ const RED: D2D1_COLOR_F = D2D1_COLOR_F {
     b: 0.27,
     a: 1.0,
 };
+
+#[cfg(test)]
+mod probe {
+    use super::*;
+    use crate::commands::open_windows::Window;
+    use crate::dock::Item as DockItem;
+    use crate::dock::logic::AppLayout;
+    use crate::dock::status::{Battery, Volume};
+    use crate::indexer::AppEntry;
+    use std::path::PathBuf;
+    use windows::Win32::Graphics::Imaging::*;
+    use windows::Win32::System::Com::*;
+    use windows::core::{GUID, HSTRING};
+
+    #[test]
+    fn dark_icons_are_told_apart_from_colorful_ones() {
+        let icon = |rgb: [u8; 3]| IconPixels {
+            width: 2,
+            height: 2,
+            bgra: (0..4).flat_map(|_| [rgb[2], rgb[1], rgb[0], 255]).collect(),
+        };
+        assert!(is_dark(&icon([0, 0, 0])), "pure black needs a plate");
+        assert!(is_dark(&icon([20, 24, 22])), "near black needs a plate");
+        assert!(!is_dark(&icon([59, 255, 146])), "the accent does not");
+        assert!(!is_dark(&icon([240, 240, 240])), "white does not");
+        let clear = IconPixels {
+            width: 2,
+            height: 2,
+            bgra: vec![0; 16],
+        };
+        assert!(!is_dark(&clear), "a fully transparent icon has no ink");
+    }
+
+    /// Draws the dock through the real renderer into a PNG, so the shell, the
+    /// magnification wave and the status parts can be inspected without a
+    /// screen capture.
+    #[test]
+    #[ignore = "writes a preview PNG"]
+    fn renders_the_dock_to_a_png() {
+        std::thread::spawn(|| unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
+            let entries = [
+                ("notepad", "Notepad", "System32\\notepad.exe", 1),
+                ("explorer", "File Explorer", "explorer.exe", 2),
+                ("cmd", "Command Prompt", "System32\\cmd.exe", 1),
+                ("mspaint", "Paint", "System32\\mspaint.exe", 2),
+                ("calc", "Calculator", "System32\\calc.exe", 1),
+                ("snipping", "Snipping Tool", "System32\\SnippingTool.exe", 1),
+            ];
+            let mut items = Vec::new();
+            let mut icons = HashMap::new();
+            for (id, name, relative, windows) in entries {
+                let path = PathBuf::from(&windir).join(relative).to_string_lossy().into_owned();
+                if let Some(pixels) = crate::desk::icons::load(&path, 64) {
+                    icons.insert(id.to_string(), Arc::new(pixels));
+                }
+                let windows = (0..windows)
+                    .map(|index| Window {
+                        // Zero stands for the foreground window in a locked
+                        // session, so one app shows its active indicator.
+                        hwnd: if id == "calc" && index == 0 { 0 } else { index + 1 },
+                        title: format!("{name} {index}"),
+                        exe: path.clone(),
+                    })
+                    .collect();
+                items.push(DockItem {
+                    app: AppEntry {
+                        name: name.into(),
+                        id: id.into(),
+                        path: Some(path),
+                    },
+                    windows,
+                });
+            }
+            // A pure-black icon with alpha, like ChatGPT's: it vanishes on the
+            // dark glass unless the renderer gives it a plate.
+            let mut ink = vec![0u8; 64 * 64 * 4];
+            for y in 0..64i32 {
+                for x in 0..64i32 {
+                    let (dx, dy) = (x - 32, y - 32);
+                    if dx * dx + dy * dy <= 26 * 26 {
+                        let at = ((y * 64 + x) * 4) as usize;
+                        ink[at] = 0;
+                        ink[at + 1] = 0;
+                        ink[at + 2] = 0;
+                        ink[at + 3] = 255;
+                    }
+                }
+            }
+            icons.insert(
+                "chatgpt".into(),
+                Arc::new(IconPixels {
+                    width: 64,
+                    height: 64,
+                    bgra: ink,
+                }),
+            );
+            items.push(DockItem {
+                app: AppEntry {
+                    name: "ChatGPT".into(),
+                    id: "chatgpt".into(),
+                    path: None,
+                },
+                windows: Vec::new(),
+            });
+            let parts = logic::parts(None, true, true);
+            let status = Status {
+                time: "23:58".into(),
+                date: "Thu 12 Nov".into(),
+                battery: Some(Battery {
+                    percent: 82,
+                    charging: false,
+                }),
+                volume: Some(Volume {
+                    percent: 64,
+                    muted: false,
+                }),
+                minute: 0,
+            };
+            let levels = [0.0, 0.11, 0.45, 1.0, 0.45, 0.11, 0.0];
+            let palette = Palette::new(true, true);
+            let frame = Frame {
+                layout: AppLayout {
+                    count: items.len(),
+                    pinned: 3,
+                },
+                dpi: 144,
+                palette: &palette,
+                items: &items,
+                icons: &icons,
+                hover: Some(3),
+                hover_levels: &levels,
+                app_icon_size: 32.0,
+                layout_scale: 1.0,
+                capacity: items.len(),
+                scroll: 0,
+                status: &status,
+                hover_part: None,
+                parts: &parts,
+                tray: &[],
+                inline: &[],
+                flyout_open: false,
+            };
+
+            let dpi = 144.0;
+            let width = (frame.layout.total_width(&parts, 1.0) * dpi / 96.0).ceil() as u32;
+            let height = (logic::height(1.0) * dpi / 96.0).ceil() as u32;
+            let factory: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).unwrap();
+            let bitmap = factory
+                .CreateBitmap(width, height, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad)
+                .unwrap();
+            let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).unwrap();
+            let rt = d2d
+                .CreateWicBitmapRenderTarget(
+                    &bitmap,
+                    &D2D1_RENDER_TARGET_PROPERTIES {
+                        pixelFormat: D2D1_PIXEL_FORMAT {
+                            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                        },
+                        dpiX: dpi,
+                        dpiY: dpi,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let mut renderer = Renderer::new().unwrap();
+            let desktop = D2D1_COLOR_F {
+                r: 0.08,
+                g: 0.10,
+                b: 0.13,
+                a: 1.0,
+            };
+            renderer.draw_to(&rt, &frame, desktop).unwrap();
+
+            let path = std::env::temp_dir().join("opencode").join("dock-render.png");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let stream = factory.CreateStream().unwrap();
+            stream
+                .InitializeFromFilename(&HSTRING::from(path.as_os_str()), 0x4000_0000)
+                .unwrap();
+            let encoder = factory
+                .CreateEncoder(&GUID_ContainerFormatPng, &GUID::zeroed())
+                .unwrap();
+            encoder.Initialize(&stream, WICBitmapEncoderNoCache).unwrap();
+            let mut png: Option<IWICBitmapFrameEncode> = None;
+            encoder.CreateNewFrame(&mut png, std::ptr::null_mut()).unwrap();
+            let png = png.unwrap();
+            png.Initialize(None).unwrap();
+            png.SetSize(width, height).unwrap();
+            let mut format = GUID_WICPixelFormat32bppPBGRA;
+            png.SetPixelFormat(&mut format).unwrap();
+            png.WriteSource(&bitmap, std::ptr::null()).unwrap();
+            png.Commit().unwrap();
+            encoder.Commit().unwrap();
+            println!("saved {} ({width}x{height}, {} apps)", path.display(), items.len());
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Reports how dark each pinned app's icon is, and whether it even loads,
+    /// so a black-on-black icon can be told apart from a missing one.
+    #[test]
+    #[ignore = "reads the live pins and their real icons"]
+    fn prints_pin_icon_contrast() {
+        std::thread::spawn(|| unsafe {
+            use windows::Win32::UI::Shell::{IShellItem, SHCreateItemFromParsingName};
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let pins = crate::dock::pins::load(&crate::util::data_dir().join("dock-pins.toml"));
+            for pin in pins {
+                let parsing = match &pin.path {
+                    Some(path) => path.clone(),
+                    None => format!("shell:AppsFolder\\{}", pin.id),
+                };
+                let item: Result<IShellItem> = SHCreateItemFromParsingName(&HSTRING::from(parsing.as_str()), None);
+                let item = item.ok();
+                for size in [32, 48, 64, 128, 256] {
+                    let pixels = item.as_ref().and_then(|item| crate::indexer::load_icon(item, size));
+                    let Some(pixels) = pixels else {
+                        println!("{:24} {size:3} NO ICON", pin.name);
+                        continue;
+                    };
+                    let mut weight = 0.0;
+                    let mut luma = 0.0;
+                    let mut bright = 0;
+                    let mut opaque = 0;
+                    for px in pixels.bgra.as_chunks::<4>().0 {
+                        let a = px[3] as f32 / 255.0;
+                        let l = (0.0722 * px[2] as f32 + 0.7152 * px[1] as f32 + 0.2126 * px[0] as f32) / 255.0;
+                        weight += a;
+                        luma += l * a;
+                        if a > 0.5 {
+                            opaque += 1;
+                            if l > 0.6 {
+                                bright += 1;
+                            }
+                        }
+                    }
+                    println!(
+                        "{:24} {size:3} coverage={:.2} luma={:.3} bright={:.0}%",
+                        pin.name,
+                        opaque as f32 / (pixels.width * pixels.height) as f32,
+                        if weight > 0.0 { luma / weight } else { 0.0 },
+                        bright as f32 / opaque.max(1) as f32 * 100.0,
+                    );
+                }
+            }
+        })
+        .join()
+        .unwrap();
+    }
+}

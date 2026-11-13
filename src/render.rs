@@ -427,6 +427,8 @@ pub struct Fonts {
     pub text: PCWSTR,
     pub display: PCWSTR,
     pub icons: PCWSTR,
+    /// A monospace face for the dock's terminal readouts.
+    pub mono: PCWSTR,
 }
 
 impl Fonts {
@@ -449,6 +451,7 @@ impl Fonts {
             text: pick(w!("Segoe UI Variable Text"), w!("Segoe UI")),
             display: pick(w!("Segoe UI Variable Display"), w!("Segoe UI")),
             icons: pick(w!("Segoe Fluent Icons"), w!("Segoe MDL2 Assets")),
+            mono: pick(w!("Cascadia Mono"), w!("Consolas")),
         }
     }
 }
